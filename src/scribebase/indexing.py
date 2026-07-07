@@ -44,6 +44,7 @@ def index_source(
         logger.info("Embedding batch %s/%s", batch_index, total_batches)
         vectors.extend(batch_vectors)
     dimension = len(vectors[0]) if vectors else None
+    _validate_embedding_dimension(config, dimension)
     for chunk in chunks:
         chunk.embedding_model = config.embedding.model
         chunk.embedding_dimension = dimension
@@ -54,7 +55,9 @@ def index_source(
     store = WeaviateStore(config.weaviate)
     try:
         if no_create_collection:
-            store.connect()
+            client = store.connect()
+            if not client.collections.exists(config.weaviate.collection):
+                raise RuntimeError(f"Weaviate collection missing: {config.weaviate.collection}")
         else:
             store.ensure_collection()
         store.delete_source(source_id)
@@ -91,6 +94,25 @@ def rebuild_index(source_id: str | None, all_sources: bool, config: AppConfig, l
     for sid in ids:
         if sid:
             index_source(sid, config, logger)
+
+
+def _validate_embedding_dimension(config: AppConfig, dimension: int | None) -> None:
+    from scribebase.source_registry import list_manifests
+
+    if dimension is None:
+        return
+    for manifest in list_manifests(config.data_dir):
+        summary = manifest.embedding_summary
+        if not summary.indexed_in_weaviate:
+            continue
+        if summary.weaviate_collection != config.weaviate.collection:
+            continue
+        if summary.embedding_model == config.embedding.model and summary.embedding_dimension != dimension:
+            raise RuntimeError(
+                "Embedding dimension mismatch for existing index: "
+                f"configured model produced {dimension}, but {manifest.source_id} stores "
+                f"{summary.embedding_dimension}. Rebuild the index."
+            )
 
 
 def _chapter_file_name(chapter: str) -> str:

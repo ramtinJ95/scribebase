@@ -37,8 +37,12 @@ class WeaviateStore:
             return
         client.collections.create(
             self.config.collection,
-            vectorizer_config=Configure.Vectorizer.none(),
-            vector_index_config=Configure.VectorIndex.hnsw(),
+            vectorizer_config=[
+                Configure.NamedVectors.none(
+                    name=self.config.vector_name,
+                    vector_index_config=Configure.VectorIndex.hnsw(),
+                )
+            ],
             properties=[
                 Property(name="text", data_type=DataType.TEXT),
                 Property(name="chunk_id", data_type=DataType.TEXT),
@@ -73,7 +77,7 @@ class WeaviateStore:
                 props = _chunk_properties(chunk)
                 batch.add_object(
                     properties=props,
-                    vector=vector,
+                    vector={self.config.vector_name: vector},
                     uuid=generate_uuid5(chunk.chunk_id),
                 )
 
@@ -102,6 +106,7 @@ class WeaviateStore:
             "alpha": alpha,
             "limit": top_k,
             "return_metadata": MetadataQuery(score=True, explain_score=True),
+            "target_vector": self.config.vector_name,
         }
         where = build_filter(filters)
         if where is not None:
@@ -145,7 +150,7 @@ def build_filter(filters: SearchFilters):
 def _chunk_properties(chunk: Chunk) -> dict[str, Any]:
     data = chunk.model_dump(mode="json")
     data["created_at"] = data.get("created_at") or datetime.now(timezone.utc).isoformat()
-    return data
+    return {key: value for key, value in data.items() if value is not None}
 
 
 def _props_to_chunk(props: dict[str, Any]) -> dict[str, Any]:
