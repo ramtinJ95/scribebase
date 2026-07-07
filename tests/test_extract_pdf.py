@@ -115,3 +115,52 @@ def test_auto_scanned_pdf_ocr_image_backed_pages(tmp_path, monkeypatch) -> None:
 
     assert manifest.extraction_summary.pages_total == 1
     assert manifest.extraction_summary.pages_ocr == 1
+
+
+def test_auto_mixed_pdf_ocr_scanned_pages(tmp_path, monkeypatch) -> None:
+    image = tmp_path / "scan.png"
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
+    pix.clear_with(255)
+    pix.save(image)
+
+    pdf = tmp_path / "mixed.pdf"
+    doc = fitz.open()
+    for _ in range(3):
+        page = doc.new_page()
+        page.insert_text((72, 72), "This is a true text page. " * 40)
+    scanned = doc.new_page()
+    scanned.insert_image(fitz.Rect(72, 72, 200, 200), filename=image)
+    doc.save(pdf)
+    doc.close()
+
+    class FakeOCRProvider:
+        name = "fake"
+        config = SimpleNamespace(render_dpi=None)
+
+        def ocr_image(self, image_path, output_md_path, metadata):  # noqa: ANN001
+            return OCRResult(
+                markdown_path=output_md_path,
+                text=f"OCR text from scanned page {metadata['page_number']}",
+                provider=self.name,
+                model="fake-ocr",
+            )
+
+    monkeypatch.setattr("scribebase.extraction._ocr_provider", lambda *_: FakeOCRProvider())
+    config = AppConfig(data_dir=tmp_path / ".study_local")
+
+    manifest = extract_source(
+        pdf,
+        title="Mixed PDF",
+        source_type="book",
+        course=None,
+        chapter=None,
+        language="en",
+        ocr="auto",
+        config=config,
+        logger=logging.getLogger("test"),
+    )
+
+    root = config.data_dir / "sources" / manifest.source_id
+    assert manifest.extraction_summary.pages_total == 4
+    assert manifest.extraction_summary.pages_ocr == 1
+    assert "OCR text from scanned page 4" in (root / "markdown" / "page_0004.md").read_text()

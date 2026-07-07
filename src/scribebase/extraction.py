@@ -180,7 +180,9 @@ def _should_ocr_pdf_page(ocr: str, route: PDFPageRoute, likely_true_text_pdf: bo
         return False
     if ocr != "auto":
         return not route.quality.is_true_text
-    if route.quality.is_true_text or likely_true_text_pdf:
+    if route.quality.is_true_text:
+        return False
+    if likely_true_text_pdf and not route.has_images:
         return False
     if route.quality.char_count > 0 and not route.has_images:
         return False
