@@ -390,6 +390,9 @@ curl -s http://127.0.0.1:8765/jobs/JOB_ID \
 For a full Mac mini deployment with launchd examples, see
 [`docs/macmini-deployment.md`](docs/macmini-deployment.md).
 
+For agent skill templates that upload documents and retrieve context from a
+remote ScribeBase server, see [`docs/skills/`](docs/skills/).
+
 ## Command reference
 
 ```bash

@@ -251,6 +251,28 @@ curl -s "$SCRIBEBASE_URL/search" \
   -d '{"query":"what does this source say about the topic?","top_k":5}'
 ```
 
+## 9. Agent skill templates
+
+Skill templates for other sessions live in `docs/skills/`:
+
+- `scribebase-ingest`: upload a file to this Mac mini and poll the job.
+- `scribebase-context`: retrieve cited context packs or search snippets.
+
+Both `.agents` and Claude-compatible layouts are included:
+
+- `docs/skills/agents/` -> `~/.agents/skills/`
+- `docs/skills/claude/` -> `~/.claude/skills/`
+
+The templates are manual-invocation only. They should run only when the user
+explicitly asks for ScribeBase ingestion or retrieval.
+
+Set these variables in sessions that use them:
+
+```bash
+export SCRIBEBASE_URL=http://macmini.local:8765
+export SCRIBEBASE_API_TOKEN=replace-with-the-same-token
+```
+
 ## Operations checklist
 
 Run this after reboot or before debugging a remote client:
