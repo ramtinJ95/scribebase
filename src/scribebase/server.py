@@ -3,16 +3,23 @@ from __future__ import annotations
 import secrets
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from scribebase.config import AppConfig, load_config, read_api_token
 from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
-from scribebase.models import SearchFilters, SearchResult, SourceManifest
+from scribebase.models import Language, SearchFilters, SearchResult, SourceManifest, SourceType
 from scribebase.paths import ensure_data_layout
 from scribebase.retrieval.context_pack import build_context_pack
 from scribebase.retrieval.search import search_chunks
+from scribebase.server_jobs import (
+    IngestJobResponse,
+    create_ingest_job,
+    public_job,
+    read_job,
+    run_ingest_job,
+)
 from scribebase.source_registry import list_manifests
 from scribebase.vectorstores.weaviate_store import WeaviateStore
 
@@ -66,7 +73,7 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
     app = FastAPI(
         title="ScribeBase API",
         version="0.1.0",
-        description="Read-only API for searching a local ScribeBase knowledge base.",
+        description="API for searching and ingesting a local ScribeBase knowledge base.",
     )
     app.state.config = config
     app.state.api_token = api_token
@@ -123,6 +130,44 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
             context_pack=context_pack,
             results=results,
         )
+
+    @app.post("/ingest", response_model=IngestJobResponse, dependencies=[Depends(require_auth)])
+    def ingest(
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        title: str = Form(...),
+        source_type: SourceType = Form("other"),
+        course: str | None = Form(None),
+        chapter: str | None = Form(None),
+        language: Language = Form("unknown"),
+        ocr: str = Form("auto"),
+        no_index: bool = Form(False),
+        continue_on_ocr_error: bool = Form(False),
+    ) -> IngestJobResponse:
+        job = create_ingest_job(
+            config,
+            file.filename or "upload",
+            file.file,
+            title,
+            source_type,
+            course,
+            chapter,
+            language,
+            ocr,
+            no_index,
+            continue_on_ocr_error,
+        )
+        background_tasks.add_task(run_ingest_job, job.job_id, config)
+        return public_job(job)
+
+    @app.get("/jobs/{job_id}", response_model=IngestJobResponse, dependencies=[Depends(require_auth)])
+    def job_status(job_id: str) -> IngestJobResponse:
+        try:
+            return public_job(read_job(config.data_dir, job_id))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     return app
 

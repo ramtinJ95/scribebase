@@ -63,7 +63,7 @@ Check the setup:
 uv run scribebase doctor
 ```
 
-Optional: start the read-only HTTP API for remote search/context clients:
+Optional: start the HTTP API for remote ingestion, search, and context clients:
 
 ```bash
 uv sync --extra server
@@ -277,6 +277,8 @@ By default, ScribeBase writes to `.study_local/`:
     context_packs/
     answers/
     quizzes/
+  uploads/
+  jobs/
   logs/app.log
 ```
 
@@ -337,7 +339,7 @@ SCRIBEBASE_API_TOKEN=change-me
 
 See `.env.example` for a copyable template.
 
-## Read-only HTTP API
+## HTTP API
 
 Install the server extra and set a bearer token before starting the API:
 
@@ -351,6 +353,8 @@ Endpoints:
 
 - `GET /health`: readiness summary for ScribeBase, Weaviate, and embeddings.
 - `GET /sources`: list indexed source manifests.
+- `POST /ingest`: upload a document and enqueue extraction/indexing.
+- `GET /jobs/{job_id}`: inspect ingestion job status and errors.
 - `POST /search`: hybrid search over chunks.
 - `POST /context`: search and return a ready-to-paste context pack.
 
@@ -363,6 +367,24 @@ curl -s http://127.0.0.1:8765/search \
   -H "Authorization: Bearer $SCRIBEBASE_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"query":"explain kubelet eviction","filters":{"source_type":"book"},"top_k":5}'
+```
+
+Example remote ingestion:
+
+```bash
+curl -s http://127.0.0.1:8765/ingest \
+  -H "Authorization: Bearer $SCRIBEBASE_API_TOKEN" \
+  -F "file=@./paper.pdf" \
+  -F "title=Paper Title" \
+  -F "source_type=paper" \
+  -F "language=en"
+```
+
+The response includes a `job_id`. Poll it until `status` is `succeeded` or `failed`:
+
+```bash
+curl -s http://127.0.0.1:8765/jobs/JOB_ID \
+  -H "Authorization: Bearer $SCRIBEBASE_API_TOKEN"
 ```
 
 ## Command reference

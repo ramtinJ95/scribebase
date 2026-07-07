@@ -123,6 +123,57 @@ def test_context_returns_context_pack(tmp_path, monkeypatch) -> None:
     assert "Chunk ID: chunk-1" in body["context_pack"]
 
 
+def test_ingest_upload_creates_job(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    started: list[str] = []
+    monkeypatch.setattr(
+        "scribebase.server.run_ingest_job",
+        lambda job_id, config: started.append(job_id),
+    )
+
+    response = client.post(
+        "/ingest",
+        headers=_auth(),
+        data={"title": "Uploaded PDF", "source_type": "paper", "language": "en"},
+        files={"file": ("paper.pdf", b"%PDF-1.7 test", "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "queued"
+    assert body["title"] == "Uploaded PDF"
+    assert body["source_type"] == "paper"
+    assert body["language"] == "en"
+    assert "upload_path" not in body
+    assert started == [body["job_id"]]
+    assert (tmp_path / "jobs" / f"{body['job_id']}.json").exists()
+    assert (tmp_path / "uploads" / f"{body['job_id']}_paper.pdf").read_bytes() == b"%PDF-1.7 test"
+
+
+def test_job_status_returns_persisted_job(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr("scribebase.server.run_ingest_job", lambda *_: None)
+    created = client.post(
+        "/ingest",
+        headers=_auth(),
+        data={"title": "Uploaded PDF"},
+        files={"file": ("paper.pdf", b"pdf", "application/pdf")},
+    ).json()
+
+    response = client.get(f"/jobs/{created['job_id']}", headers=_auth())
+
+    assert response.status_code == 200
+    assert response.json()["job_id"] == created["job_id"]
+
+
+def test_missing_job_returns_404(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.get("/jobs/missing", headers=_auth())
+
+    assert response.status_code == 404
+
+
 def _result() -> SearchResult:
     return SearchResult(
         chunk=Chunk(
