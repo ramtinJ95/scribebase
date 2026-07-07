@@ -27,6 +27,20 @@ app.add_typer(sources_app, name="sources")
 app.add_typer(chunks_app, name="chunks")
 
 
+def _fail(exc: Exception) -> None:
+    message = str(exc).strip() or exc.__class__.__name__
+    typer.echo(f"[ERROR] {message}", err=True)
+    if "Weaviate" in message or "Connection refused" in message:
+        typer.echo("Start Weaviate with: docker compose -f docker-compose.weaviate.yml up -d", err=True)
+    if "embedding" in message.lower() or "localhost:8080" in message:
+        typer.echo(
+            "Start llama.cpp embeddings, e.g.: "
+            "llama-server --model ./model.gguf --embedding --pooling last --port 8080",
+            err=True,
+        )
+    raise typer.Exit(code=1)
+
+
 def _config() -> AppConfig:
     config = load_config()
     ensure_data_layout(config.data_dir)
@@ -94,11 +108,23 @@ def extract(
     ocr: str = typer.Option("auto"),
     continue_on_ocr_error: bool = False,
 ) -> None:
-    config = _config()
-    manifest = extract_source(
-        path, title, source_type, course, chapter, language, ocr, config, _logger(config), continue_on_ocr_error
-    )
-    typer.echo(f"Extracted source_id={manifest.source_id}")
+    try:
+        config = _config()
+        manifest = extract_source(
+            path,
+            title,
+            source_type,
+            course,
+            chapter,
+            language,
+            ocr,
+            config,
+            _logger(config),
+            continue_on_ocr_error,
+        )
+        typer.echo(f"Extracted source_id={manifest.source_id}")
+    except Exception as exc:
+        _fail(exc)
 
 
 @app.command()
@@ -113,20 +139,35 @@ def ingest(
     no_index: bool = typer.Option(False, help="Extract only; do not index into Weaviate."),
     continue_on_ocr_error: bool = False,
 ) -> None:
-    config = _config()
-    logger = _logger(config)
-    manifest = extract_source(
-        path, title, source_type, course, chapter, language, ocr, config, logger, continue_on_ocr_error
-    )
-    if not no_index:
-        index_source(manifest.source_id, config, logger)
-    typer.echo(f"Ingested source_id={manifest.source_id}")
+    try:
+        config = _config()
+        logger = _logger(config)
+        manifest = extract_source(
+            path,
+            title,
+            source_type,
+            course,
+            chapter,
+            language,
+            ocr,
+            config,
+            logger,
+            continue_on_ocr_error,
+        )
+        if not no_index:
+            index_source(manifest.source_id, config, logger)
+        typer.echo(f"Ingested source_id={manifest.source_id}")
+    except Exception as exc:
+        _fail(exc)
 
 
 @app.command(name="index")
 def index_cmd(source_id: str = typer.Option(..., "--source-id")) -> None:
-    config = _config()
-    index_source(source_id, config, _logger(config))
+    try:
+        config = _config()
+        index_source(source_id, config, _logger(config))
+    except Exception as exc:
+        _fail(exc)
 
 
 @app.command(name="rebuild-index")
@@ -134,8 +175,11 @@ def rebuild_index_cmd(
     source_id: Optional[str] = typer.Option(None, "--source-id"),
     all_sources: bool = typer.Option(False, "--all"),
 ) -> None:
-    config = _config()
-    rebuild_index(source_id, all_sources, config, _logger(config))
+    try:
+        config = _config()
+        rebuild_index(source_id, all_sources, config, _logger(config))
+    except Exception as exc:
+        _fail(exc)
 
 
 @app.command()
@@ -154,26 +198,29 @@ def search(
     alpha: Optional[float] = None,
     allow_model_mismatch: bool = False,
 ) -> None:
-    config = _config()
-    results = search_chunks(
-        query,
-        SearchFilters(
-            source_id=source_id,
-            title=title,
-            source_type=source_type,
-            course=course,
-            chapter=chapter,
-            section=section,
-            page_start=page_start,
-            page_end=page_end,
-            language=language,
-        ),
-        config,
-        top_k,
-        alpha,
-        allow_model_mismatch,
-    )
-    typer.echo(format_search_results(results))
+    try:
+        config = _config()
+        results = search_chunks(
+            query,
+            SearchFilters(
+                source_id=source_id,
+                title=title,
+                source_type=source_type,
+                course=course,
+                chapter=chapter,
+                section=section,
+                page_start=page_start,
+                page_end=page_end,
+                language=language,
+            ),
+            config,
+            top_k,
+            alpha,
+            allow_model_mismatch,
+        )
+        typer.echo(format_search_results(results))
+    except Exception as exc:
+        _fail(exc)
 
 
 @app.command()
@@ -192,29 +239,32 @@ def ask(
     mode: str = typer.Option("rag", help="rag, chapter, or auto"),
     allow_model_mismatch: bool = False,
 ) -> None:
-    config = _config()
-    filters = SearchFilters(
-        source_id=source_id,
-        title=title,
-        source_type=source_type,
-        course=course,
-        chapter=chapter,
-        section=section,
-        page_start=page_start,
-        page_end=page_end,
-        language=language,
-    )
-    results = _context_results(question, filters, config, top_k, mode, allow_model_mismatch)
-    pack = build_context_pack(question, results, "answer")
-    client = OpenAICompatibleChatClient(config.llm)
-    if not client.available():
-        path = save_context_pack(config.data_dir / "outputs" / "context_packs", question, pack)
-        typer.echo(f"LLM disabled or API key missing. Context pack saved: {path}")
-        return
-    answer = client.complete(ANSWER_SYSTEM_PROMPT, pack)
-    path = save_markdown(config.data_dir / "outputs" / "answers", question, answer)
-    typer.echo(answer)
-    typer.echo(f"Answer saved: {path}")
+    try:
+        config = _config()
+        filters = SearchFilters(
+            source_id=source_id,
+            title=title,
+            source_type=source_type,
+            course=course,
+            chapter=chapter,
+            section=section,
+            page_start=page_start,
+            page_end=page_end,
+            language=language,
+        )
+        results = _context_results(question, filters, config, top_k, mode, allow_model_mismatch)
+        pack = build_context_pack(question, results, "answer")
+        client = OpenAICompatibleChatClient(config.llm)
+        if not client.available():
+            path = save_context_pack(config.data_dir / "outputs" / "context_packs", question, pack)
+            typer.echo(f"LLM disabled or API key missing. Context pack saved: {path}")
+            return
+        answer = client.complete(ANSWER_SYSTEM_PROMPT, pack)
+        path = save_markdown(config.data_dir / "outputs" / "answers", question, answer)
+        typer.echo(answer)
+        typer.echo(f"Answer saved: {path}")
+    except Exception as exc:
+        _fail(exc)
 
 
 @app.command()
@@ -227,19 +277,22 @@ def quiz(
     top_k: Optional[int] = None,
     allow_model_mismatch: bool = False,
 ) -> None:
-    config = _config()
-    prompt = f"Create {questions} quiz questions. Types: {types}."
-    filters = SearchFilters(source_id=source_id, title=title, chapter=chapter)
-    results = _context_results(prompt, filters, config, top_k, "auto", allow_model_mismatch)
-    pack = build_context_pack(prompt, results, "quiz")
-    client = OpenAICompatibleChatClient(config.llm)
-    if not client.available():
-        path = save_context_pack(config.data_dir / "outputs" / "quizzes", prompt, pack)
-        typer.echo(f"LLM disabled or API key missing. Quiz prompt saved: {path}")
-        return
-    quiz_md = client.complete(QUIZ_SYSTEM_PROMPT, pack)
-    path = save_markdown(config.data_dir / "outputs" / "quizzes", title or source_id or "quiz", quiz_md)
-    typer.echo(f"Quiz saved: {path}")
+    try:
+        config = _config()
+        prompt = f"Create {questions} quiz questions. Types: {types}."
+        filters = SearchFilters(source_id=source_id, title=title, chapter=chapter)
+        results = _context_results(prompt, filters, config, top_k, "auto", allow_model_mismatch)
+        pack = build_context_pack(prompt, results, "quiz")
+        client = OpenAICompatibleChatClient(config.llm)
+        if not client.available():
+            path = save_context_pack(config.data_dir / "outputs" / "quizzes", prompt, pack)
+            typer.echo(f"LLM disabled or API key missing. Quiz prompt saved: {path}")
+            return
+        quiz_md = client.complete(QUIZ_SYSTEM_PROMPT, pack)
+        path = save_markdown(config.data_dir / "outputs" / "quizzes", title or source_id or "quiz", quiz_md)
+        typer.echo(f"Quiz saved: {path}")
+    except Exception as exc:
+        _fail(exc)
 
 
 @sources_app.command("list")
