@@ -126,7 +126,7 @@ def _validate_embedding_consistency(
             raise RuntimeError(
                 "Embedding model mismatch for existing index: "
                 f"configured model is {config.embedding.model!r}, but {manifest.source_id} stores "
-                f"{summary.embedding_model!r}. Run `study rebuild-index --all` after changing models."
+                f"{summary.embedding_model!r}. Run `scribebase rebuild-index --all` after changing models."
             )
         if summary.embedding_model == config.embedding.model and summary.embedding_dimension != dimension:
             raise RuntimeError(
