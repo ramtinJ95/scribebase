@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shlex
 from pathlib import Path
 from typing import Optional
 
@@ -91,9 +92,11 @@ def doctor() -> None:
         typer.echo("Example: llama-server --model ./model.gguf --embedding --pooling last --port 8080")
 
     provider = config.ocr.providers.get(config.ocr.default_provider)
+    ocr_ok, ocr_msg = _ocr_doctor_message(provider.command if provider else None)
     typer.echo(
-        f"[{'OK' if provider else 'FAIL'}] OCR provider: {config.ocr.default_provider}"
+        f"[{'OK' if ocr_ok else 'WARN'}] OCR provider: {config.ocr.default_provider}"
         + (f" ({provider.command})" if provider else "")
+        + (f"; {ocr_msg}" if ocr_msg else "")
     )
     llm_key = os.getenv(config.llm.api_key_env)
     llm_ok = (not config.llm.enabled) or bool(llm_key)
@@ -411,6 +414,22 @@ def _markdown_context_chunks(config: AppConfig, filters: SearchFilters) -> list[
             )
         )
     return out
+
+
+def _ocr_doctor_message(command: str | None) -> tuple[bool, str]:
+    if not command:
+        return False, "no command configured"
+    try:
+        parts = shlex.split(command.format(input_image="x", output_md="y", output_json="z", page_number=1, source_id="s"))
+    except Exception as exc:
+        return False, f"invalid command template: {exc}"
+    for part in parts[1:]:
+        if part.endswith(".py") or part.startswith("./"):
+            path = Path(part)
+            if not path.exists():
+                return False, f"missing adapter path: {part}"
+            break
+    return True, "configured"
 
 
 if __name__ == "__main__":
