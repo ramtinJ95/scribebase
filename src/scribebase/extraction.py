@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,16 +11,24 @@ from scribebase.extractors.image_renderer import render_pdf_page
 from scribebase.extractors.pymupdf_extractor import (
     extract_page_markdown,
     extract_page_text,
+    page_has_images,
     pdf_page_count,
 )
 from scribebase.markdown.normalize import combine_pages, normalize_page_markdown
-from scribebase.models import PageMetadata, SourceManifest
+from scribebase.models import PageMetadata, SourceManifest, TextQuality
 from scribebase.ocr.shell_provider import ShellOCRProvider
 from scribebase.paths import chapter_file_name, source_subdirs
 from scribebase.pdf_router import evaluate_text_quality
 from scribebase.source_registry import create_manifest, write_manifest
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"}
+
+
+@dataclass(frozen=True)
+class PDFPageRoute:
+    raw_text: str
+    quality: TextQuality
+    has_images: bool
 
 
 def extract_source(
@@ -85,30 +94,28 @@ def _extract_pdf(
     paths = source_subdirs(config.data_dir, manifest.source_id)
     provider: ShellOCRProvider | None = None
     pages: list[PageMetadata] = []
-    for page_index in range(pdf_page_count(pdf_path)):
+    routes = _pdf_page_routes(pdf_path, config)
+    likely_true_text_pdf = _likely_true_text_pdf(routes, config)
+    if ocr == "auto":
+        logger.info(
+            "PDF auto route: %s pages, %s text-layer pages, true_text_pdf=%s",
+            len(routes),
+            sum(1 for route in routes if _has_usable_text_layer(route.quality, config)),
+            likely_true_text_pdf,
+        )
+    for page_index, route in enumerate(routes):
         page_number = page_index + 1
         md_path = paths["markdown"] / f"page_{page_number:04d}.md"
         image_path = paths["pages"] / f"page_{page_number:04d}.png"
-        raw_text = extract_page_text(pdf_path, page_index)
-        quality = evaluate_text_quality(raw_text, config.pdf_detection)
-        use_ocr = ocr == "always" or (ocr != "never" and not quality.is_true_text)
+        use_ocr = _should_ocr_pdf_page(ocr, route, likely_true_text_pdf)
         if not use_ocr:
-            logger.info("Page %s: text layer detected, using PyMuPDF4LLM", page_number)
-            page_md, method = extract_page_markdown(pdf_path, page_index)
-            text = normalize_page_markdown(page_md, page_number)
-            md_path.write_text(text)
-            meta = PageMetadata(
-                source_id=manifest.source_id,
-                page_number=page_number,
-                page_index=page_index,
-                input_type="pdf_page",
-                text_layer_detected=True,
-                extraction_method=method,  # type: ignore[arg-type]
-                image_path=None,
-                markdown_path=str(md_path),
-                char_count=len(text.strip()),
-                word_count=len(text.split()),
-                quality_flags=quality.flags,
+            logger.info("Page %s: using PyMuPDF4LLM", page_number)
+            meta = _extract_text_pdf_page(
+                pdf_path,
+                page_index,
+                md_path,
+                manifest,
+                route.quality,
             )
         else:
             if ocr == "never":
@@ -127,11 +134,83 @@ def _extract_pdf(
                 provider,
                 logger,
                 continue_on_ocr_error,
-                quality.flags,
+                route.quality.flags,
             )
         _write_page_metadata(paths["metadata"], meta)
         pages.append(meta)
     return pages
+
+
+def _pdf_page_routes(pdf_path: Path, config: AppConfig) -> list[PDFPageRoute]:
+    routes = []
+    for page_index in range(pdf_page_count(pdf_path)):
+        raw_text = extract_page_text(pdf_path, page_index)
+        routes.append(
+            PDFPageRoute(
+                raw_text=raw_text,
+                quality=evaluate_text_quality(raw_text, config.pdf_detection),
+                has_images=page_has_images(pdf_path, page_index),
+            )
+        )
+    return routes
+
+
+def _likely_true_text_pdf(routes: list[PDFPageRoute], config: AppConfig) -> bool:
+    if not routes:
+        return False
+    text_layer_pages = sum(1 for route in routes if _has_usable_text_layer(route.quality, config))
+    true_text_pages = sum(1 for route in routes if route.quality.is_true_text)
+    return true_text_pages > 0 and (text_layer_pages / len(routes) >= 0.5 or true_text_pages >= 3)
+
+
+def _has_usable_text_layer(quality: TextQuality, config: AppConfig) -> bool:
+    min_chars = max(20, config.pdf_detection.min_chars_per_page // 4)
+    return (
+        quality.char_count >= min_chars
+        and quality.alpha_ratio >= config.pdf_detection.min_alpha_ratio
+        and "replacement_chars" not in quality.flags
+        and "long_average_word" not in quality.flags
+    )
+
+
+def _should_ocr_pdf_page(ocr: str, route: PDFPageRoute, likely_true_text_pdf: bool) -> bool:
+    if ocr == "always":
+        return True
+    if ocr == "never":
+        return False
+    if ocr != "auto":
+        return not route.quality.is_true_text
+    if route.quality.is_true_text or likely_true_text_pdf:
+        return False
+    if route.quality.char_count > 0 and not route.has_images:
+        return False
+    return route.has_images
+
+
+def _extract_text_pdf_page(
+    pdf_path: Path,
+    page_index: int,
+    md_path: Path,
+    manifest: SourceManifest,
+    quality: TextQuality,
+) -> PageMetadata:
+    page_number = page_index + 1
+    page_md, method = extract_page_markdown(pdf_path, page_index)
+    text = normalize_page_markdown(page_md, page_number)
+    md_path.write_text(text)
+    return PageMetadata(
+        source_id=manifest.source_id,
+        page_number=page_number,
+        page_index=page_index,
+        input_type="pdf_page",
+        text_layer_detected=quality.is_true_text,
+        extraction_method=method,  # type: ignore[arg-type]
+        image_path=None,
+        markdown_path=str(md_path),
+        char_count=len(text.strip()),
+        word_count=len(text.split()),
+        quality_flags=quality.flags,
+    )
 
 
 def _extract_images(

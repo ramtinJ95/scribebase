@@ -34,3 +34,13 @@ def pdf_page_count(pdf_path: Path) -> int:
         return doc.page_count
     finally:
         doc.close()
+
+
+def page_has_images(pdf_path: Path, page_index: int) -> bool:
+    import fitz
+
+    doc = fitz.open(pdf_path)
+    try:
+        return bool(doc[page_index].get_images(full=True))
+    finally:
+        doc.close()
