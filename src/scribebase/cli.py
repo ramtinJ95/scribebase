@@ -8,7 +8,14 @@ from typing import Optional
 
 import typer
 
-from scribebase.config import AppConfig, load_config, resolve_config_path, resolve_data_dir, write_default_config
+from scribebase.config import (
+    AppConfig,
+    load_config,
+    read_api_token,
+    resolve_config_path,
+    resolve_data_dir,
+    write_default_config,
+)
 from scribebase.extraction import extract_source
 from scribebase.indexing import index_source, load_chunks, rebuild_index
 from scribebase.llm.openai_compatible import OpenAICompatibleChatClient, save_markdown
@@ -105,6 +112,32 @@ def doctor() -> None:
     llm_key = os.getenv(config.llm.api_key_env)
     llm_ok = (not config.llm.enabled) or bool(llm_key)
     typer.echo(f"[{'OK' if llm_ok else 'WARN'}] LLM config: enabled={config.llm.enabled}")
+
+
+@app.command()
+def serve(
+    host: Optional[str] = typer.Option(None, help="Bind host. Defaults to config.server.host."),
+    port: Optional[int] = typer.Option(None, help="Bind port. Defaults to config.server.port."),
+) -> None:
+    try:
+        import uvicorn
+    except ImportError as exc:
+        typer.echo("Install server dependencies with: uv sync --extra server", err=True)
+        raise typer.Exit(code=1) from exc
+
+    config = _config()
+    api_token = read_api_token(config)
+    if not api_token:
+        typer.echo(f"Set {config.server.api_token_env} before starting the server.", err=True)
+        raise typer.Exit(code=1)
+
+    from scribebase.server import create_app
+
+    uvicorn.run(
+        create_app(config, api_token),
+        host=host or config.server.host,
+        port=port or config.server.port,
+    )
 
 
 @app.command()
