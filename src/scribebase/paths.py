@@ -10,6 +10,8 @@ def ensure_data_layout(data_dir: Path) -> None:
         "outputs/answers",
         "outputs/quizzes",
         "logs",
+        "uploads",
+        "jobs",
     ]:
         (data_dir / rel).mkdir(parents=True, exist_ok=True)
 
