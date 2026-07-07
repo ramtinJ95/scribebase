@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+
+CONFIG_ENV = "SCRIBEBASE_CONFIG"
+DATA_DIR_ENV = "SCRIBEBASE_DATA_DIR"
+HOST_ENV = "SCRIBEBASE_HOST"
+PORT_ENV = "SCRIBEBASE_PORT"
+API_TOKEN_ENV = "SCRIBEBASE_API_TOKEN"
 
 
 class WeaviateConfig(BaseModel):
@@ -81,6 +90,12 @@ class LLMConfig(BaseModel):
     temperature: float = 0.2
 
 
+class ServerConfig(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = 8765
+    api_token_env: str = API_TOKEN_ENV
+
+
 class AppConfig(BaseModel):
     data_dir: Path = Path(".study_local")
     weaviate: WeaviateConfig = Field(default_factory=WeaviateConfig)
@@ -90,6 +105,7 @@ class AppConfig(BaseModel):
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    server: ServerConfig = Field(default_factory=ServerConfig)
 
     @property
     def config_path(self) -> Path:
@@ -100,12 +116,54 @@ def default_config() -> AppConfig:
     return AppConfig()
 
 
+def load_environment() -> None:
+    load_dotenv()
+
+
+def resolve_data_dir(data_dir: Path | None = None) -> Path:
+    load_environment()
+    if data_dir is not None:
+        return data_dir
+    return Path(os.getenv(DATA_DIR_ENV, ".study_local"))
+
+
+def resolve_config_path(config_path: Path | None = None) -> Path:
+    load_environment()
+    if config_path is not None:
+        return config_path
+    env_path = os.getenv(CONFIG_ENV)
+    if env_path:
+        return Path(env_path)
+    return resolve_data_dir() / "config.yaml"
+
+
 def load_config(config_path: Path | None = None) -> AppConfig:
-    path = config_path or Path(".study_local/config.yaml")
+    load_environment()
+    path = resolve_config_path(config_path)
     if not path.exists():
-        return default_config()
-    data = yaml.safe_load(path.read_text()) or {}
+        data: dict[str, Any] = {}
+    else:
+        data = yaml.safe_load(path.read_text()) or {}
+    data = deep_update(data, env_override_data())
     return AppConfig.model_validate(data)
+
+
+def env_override_data() -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    if data_dir := os.getenv(DATA_DIR_ENV):
+        overrides["data_dir"] = data_dir
+    server: dict[str, Any] = {}
+    if host := os.getenv(HOST_ENV):
+        server["host"] = host
+    if port := os.getenv(PORT_ENV):
+        server["port"] = port
+    if server:
+        overrides["server"] = server
+    return overrides
+
+
+def read_api_token(config: AppConfig) -> str | None:
+    return os.getenv(config.server.api_token_env)
 
 
 def config_to_yaml(config: AppConfig) -> str:
@@ -113,11 +171,16 @@ def config_to_yaml(config: AppConfig) -> str:
     return yaml.safe_dump(data, sort_keys=False)
 
 
-def write_default_config(data_dir: Path, overwrite: bool = False) -> Path:
+def write_default_config(
+    data_dir: Path,
+    overwrite: bool = False,
+    config_path: Path | None = None,
+) -> Path:
     config = default_config()
     config.data_dir = data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
-    path = data_dir / "config.yaml"
+    path = config_path or data_dir / "config.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and not overwrite:
         return path
     path.write_text(config_to_yaml(config))

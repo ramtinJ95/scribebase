@@ -303,7 +303,31 @@ ocr:
       timeout_seconds: 120
       model_name: "Apple Vision"
       render_dpi: 200
+
+server:
+  host: "127.0.0.1"
+  port: 8765
+  api_token_env: "SCRIBEBASE_API_TOKEN"
 ```
+
+### Environment overrides
+
+ScribeBase loads `.env` when present and lets deployment-specific environment variables override the YAML file:
+
+```bash
+SCRIBEBASE_DATA_DIR=/Users/ramtin/scribebase-data
+SCRIBEBASE_CONFIG=/Users/ramtin/scribebase-data/config.yaml
+SCRIBEBASE_HOST=0.0.0.0
+SCRIBEBASE_PORT=8765
+SCRIBEBASE_API_TOKEN=change-me
+```
+
+- `SCRIBEBASE_DATA_DIR`: local source, output, and log directory.
+- `SCRIBEBASE_CONFIG`: explicit config path. Defaults to `$SCRIBEBASE_DATA_DIR/config.yaml`.
+- `SCRIBEBASE_HOST` and `SCRIBEBASE_PORT`: reserved for the upcoming HTTP server.
+- `SCRIBEBASE_API_TOKEN`: shared secret read from the environment, not written to config.
+
+See `.env.example` for a copyable template.
 
 ## Command reference
 

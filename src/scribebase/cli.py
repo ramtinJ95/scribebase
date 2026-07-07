@@ -8,7 +8,7 @@ from typing import Optional
 
 import typer
 
-from scribebase.config import AppConfig, load_config, write_default_config
+from scribebase.config import AppConfig, load_config, resolve_config_path, resolve_data_dir, write_default_config
 from scribebase.extraction import extract_source
 from scribebase.indexing import index_source, load_chunks, rebuild_index
 from scribebase.llm.openai_compatible import OpenAICompatibleChatClient, save_markdown
@@ -44,9 +44,9 @@ def _fail(exc: Exception) -> None:
 
 
 def _config() -> AppConfig:
-    config_path = Path(".study_local/config.yaml")
+    config_path = resolve_config_path()
     if not config_path.exists():
-        write_default_config(Path(".study_local"))
+        write_default_config(resolve_data_dir(), config_path=config_path)
     config = load_config(config_path)
     ensure_data_layout(config.data_dir)
     return config
