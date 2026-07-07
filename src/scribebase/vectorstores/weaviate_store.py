@@ -65,6 +65,12 @@ class WeaviateStore:
             ],
         )
 
+    def reset_collection(self) -> None:
+        client = self.client or self.connect()
+        if client.collections.exists(self.config.collection):
+            client.collections.delete(self.config.collection)
+        self.ensure_collection()
+
     def upsert_chunks(self, chunks: list[Chunk], vectors: list[list[float]]) -> None:
         from weaviate.util import generate_uuid5
 
@@ -80,6 +86,9 @@ class WeaviateStore:
                     vector={self.config.vector_name: vector},
                     uuid=generate_uuid5(chunk.chunk_id),
                 )
+        failed_objects = getattr(collection.batch, "failed_objects", None)
+        if failed_objects:
+            raise RuntimeError(f"Failed to insert {len(failed_objects)} chunks into Weaviate")
 
     def delete_source(self, source_id: str) -> None:
         from weaviate.classes.query import Filter

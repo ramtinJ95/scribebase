@@ -268,6 +268,8 @@ uv run study rebuild-index --all
 ```
 
 Change embedding models only with an index rebuild. Search rejects mixed embedding model results by default; pass `--allow-model-mismatch` only when you deliberately want that.
+Use `rebuild-index --all` after changing embedding dimensions; it recreates the
+Weaviate collection so the named vector index matches the new model.
 
 ## Development
 

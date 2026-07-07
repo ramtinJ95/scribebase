@@ -95,10 +95,8 @@ def rebuild_index(source_id: str | None, all_sources: bool, config: AppConfig, l
     if all_sources:
         store = WeaviateStore(config.weaviate)
         try:
-            if store.connect().collections.exists(config.weaviate.collection):
-                for sid in ids:
-                    if sid:
-                        store.delete_source(sid)
+            logger.info("Recreating Weaviate collection %s", config.weaviate.collection)
+            store.reset_collection()
         finally:
             store.close()
     for sid in ids:
