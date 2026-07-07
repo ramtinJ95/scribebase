@@ -53,6 +53,15 @@ Then verify local services:
 uv run study doctor
 ```
 
+Many small embedding models have a 512-token context window. The default
+chunking settings are intentionally conservative for those models; increase
+`chunking.target_chars` only after confirming your embedding server accepts
+larger inputs.
+
+Make sure `embedding.model` in `.study_local/config.yaml` matches the model you
+started. ScribeBase stores this name in chunk metadata and uses it to prevent
+accidental mixed-model retrieval.
+
 ## OCR provider configuration
 
 ScribeBase v1 is model-agnostic. It shells out to your local OCR adapter.

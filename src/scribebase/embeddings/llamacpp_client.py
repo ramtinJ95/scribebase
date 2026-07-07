@@ -48,7 +48,9 @@ class LlamaCppEmbeddingClient:
         try:
             response = httpx.get(f"{self.base_url}/models", timeout=5)
             if response.status_code < 500:
-                return True, "/v1/models reachable"
+                model_ids = _model_ids(response.json())
+                suffix = f"; server models={', '.join(model_ids[:3])}" if model_ids else ""
+                return True, f"/v1/models reachable; configured model={self.config.model}{suffix}"
         except Exception:
             pass
         try:
@@ -63,3 +65,12 @@ def _normalize(vec: list[float]) -> list[float]:
     if not norm:
         return vec
     return [x / norm for x in vec]
+
+
+def _model_ids(payload: dict) -> list[str]:
+    ids: list[str] = []
+    for item in payload.get("data", []):
+        model_id = item.get("id")
+        if model_id:
+            ids.append(str(model_id))
+    return ids

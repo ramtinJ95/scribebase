@@ -16,5 +16,6 @@ htmlcov/
 venv/
 
 .study_local/
+models/
 dist/
 build/

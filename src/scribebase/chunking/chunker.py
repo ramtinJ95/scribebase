@@ -31,6 +31,38 @@ def chunk_markdown(
     for unit_text, page, section in units:
         if section:
             current_section = section
+        if len(unit_text) > config.target_chars:
+            if current.strip():
+                chunks.append(
+                    _build_chunk(
+                        current,
+                        current_pages,
+                        current_section,
+                        markdown_path,
+                        manifest,
+                        page_methods,
+                        page_ocr_models,
+                        len(chunks),
+                        config.chunker_version,
+                    )
+                )
+                current = ""
+                current_pages = []
+            for split_text in _split_long_text(unit_text, config.target_chars, config.overlap_chars):
+                chunks.append(
+                    _build_chunk(
+                        split_text,
+                        [page] if page else [],
+                        current_section,
+                        markdown_path,
+                        manifest,
+                        page_methods,
+                        page_ocr_models,
+                        len(chunks),
+                        config.chunker_version,
+                    )
+                )
+            continue
         projected = f"{current}\n\n{unit_text}".strip() if current else unit_text.strip()
         if current and len(projected) > config.target_chars and len(current) >= config.min_chars:
             chunks.append(
@@ -94,6 +126,30 @@ def _units(text: str) -> list[tuple[str, int | None, str | None]]:
     if buffer.strip():
         units.append((buffer.strip(), page, section))
     return units
+
+
+def _split_long_text(text: str, target_chars: int, overlap_chars: int) -> list[str]:
+    if len(text) <= target_chars:
+        return [text.strip()]
+    chunks: list[str] = []
+    start = 0
+    while start < len(text):
+        end = min(start + target_chars, len(text))
+        if end < len(text):
+            boundary = max(
+                text.rfind("\n", start, end),
+                text.rfind(". ", start, end),
+                text.rfind(" ", start, end),
+            )
+            if boundary > start + max(200, target_chars // 2):
+                end = boundary + 1
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(text):
+            break
+        start = max(end - overlap_chars, start + 1)
+    return chunks
 
 
 def _build_chunk(

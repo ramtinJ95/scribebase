@@ -42,7 +42,10 @@ def _fail(exc: Exception) -> None:
 
 
 def _config() -> AppConfig:
-    config = load_config()
+    config_path = Path(".study_local/config.yaml")
+    if not config_path.exists():
+        write_default_config(Path(".study_local"))
+    config = load_config(config_path)
     ensure_data_layout(config.data_dir)
     return config
 

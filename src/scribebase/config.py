@@ -48,9 +48,9 @@ class OCRConfig(BaseModel):
 
 
 class ChunkingConfig(BaseModel):
-    target_chars: int = 4000
-    overlap_chars: int = 600
-    min_chars: int = 800
+    target_chars: int = 600
+    overlap_chars: int = 100
+    min_chars: int = 150
     chunker_version: str = "v1"
 
 
