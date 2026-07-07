@@ -30,6 +30,7 @@ def index_source(
     config: AppConfig,
     logger,
     no_create_collection: bool = False,
+    allow_existing_model_mismatch: bool = False,
 ) -> SourceManifest:
     manifest = find_source(config.data_dir, source_id)
     chunks = chunk_source(manifest, config)
@@ -44,7 +45,7 @@ def index_source(
         logger.info("Embedding batch %s/%s", batch_index, total_batches)
         vectors.extend(batch_vectors)
     dimension = len(vectors[0]) if vectors else None
-    _validate_embedding_dimension(config, dimension)
+    _validate_embedding_consistency(config, source_id, dimension, allow_existing_model_mismatch)
     for chunk in chunks:
         chunk.embedding_model = config.embedding.model
         chunk.embedding_dimension = dimension
@@ -91,22 +92,44 @@ def rebuild_index(source_id: str | None, all_sources: bool, config: AppConfig, l
     if not all_sources and not source_id:
         raise ValueError("Provide --source-id or --all")
     ids = [source_id] if source_id else [manifest.source_id for manifest in list_manifests(config.data_dir)]
+    if all_sources:
+        store = WeaviateStore(config.weaviate)
+        try:
+            if store.connect().collections.exists(config.weaviate.collection):
+                for sid in ids:
+                    if sid:
+                        store.delete_source(sid)
+        finally:
+            store.close()
     for sid in ids:
         if sid:
-            index_source(sid, config, logger)
+            index_source(sid, config, logger, allow_existing_model_mismatch=all_sources)
 
 
-def _validate_embedding_dimension(config: AppConfig, dimension: int | None) -> None:
+def _validate_embedding_consistency(
+    config: AppConfig,
+    source_id: str,
+    dimension: int | None,
+    allow_existing_model_mismatch: bool,
+) -> None:
     from scribebase.source_registry import list_manifests
 
     if dimension is None:
         return
     for manifest in list_manifests(config.data_dir):
+        if manifest.source_id == source_id:
+            continue
         summary = manifest.embedding_summary
         if not summary.indexed_in_weaviate:
             continue
         if summary.weaviate_collection != config.weaviate.collection:
             continue
+        if summary.embedding_model != config.embedding.model and not allow_existing_model_mismatch:
+            raise RuntimeError(
+                "Embedding model mismatch for existing index: "
+                f"configured model is {config.embedding.model!r}, but {manifest.source_id} stores "
+                f"{summary.embedding_model!r}. Run `study rebuild-index --all` after changing models."
+            )
         if summary.embedding_model == config.embedding.model and summary.embedding_dimension != dimension:
             raise RuntimeError(
                 "Embedding dimension mismatch for existing index: "
