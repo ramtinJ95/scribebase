@@ -83,7 +83,7 @@ def _extract_pdf(
     continue_on_ocr_error: bool,
 ) -> list[PageMetadata]:
     paths = source_subdirs(config.data_dir, manifest.source_id)
-    provider = _ocr_provider(ocr, config)
+    provider: ShellOCRProvider | None = None
     pages: list[PageMetadata] = []
     for page_index in range(pdf_page_count(pdf_path)):
         page_number = page_index + 1
@@ -113,6 +113,7 @@ def _extract_pdf(
         else:
             if ocr == "never":
                 raise RuntimeError(f"Page {page_number} has insufficient text and OCR is disabled")
+            provider = provider or _ocr_provider(ocr, config)
             logger.info("Page %s: insufficient text, rendering at %s DPI", page_number, config.ocr.render_dpi)
             render_pdf_page(pdf_path, page_index, image_path, config.ocr.render_dpi)
             meta = _run_ocr_page(
