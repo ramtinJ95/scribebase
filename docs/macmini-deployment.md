@@ -251,6 +251,21 @@ curl -s "$SCRIBEBASE_URL/search" \
   -d '{"query":"what does this source say about the topic?","top_k":5}'
 ```
 
+## 9. Agent skill templates
+
+Skill templates for other sessions live in `docs/skills/`:
+
+- `scribebase-ingest`: upload a file to this Mac mini and poll the job.
+- `scribebase-context`: retrieve cited context packs or search snippets.
+
+Copy the template directories into the skill directory for the agent harness,
+then set these variables in sessions that use them:
+
+```bash
+export SCRIBEBASE_URL=http://macmini.local:8765
+export SCRIBEBASE_API_TOKEN=replace-with-the-same-token
+```
+
 ## Operations checklist
 
 Run this after reboot or before debugging a remote client:
