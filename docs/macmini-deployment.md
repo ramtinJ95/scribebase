@@ -258,8 +258,15 @@ Skill templates for other sessions live in `docs/skills/`:
 - `scribebase-ingest`: upload a file to this Mac mini and poll the job.
 - `scribebase-context`: retrieve cited context packs or search snippets.
 
-Copy the template directories into the skill directory for the agent harness,
-then set these variables in sessions that use them:
+Both `.agents` and Claude-compatible layouts are included:
+
+- `docs/skills/agents/` -> `~/.agents/skills/`
+- `docs/skills/claude/` -> `~/.claude/skills/`
+
+The templates are manual-invocation only. They should run only when the user
+explicitly asks for ScribeBase ingestion or retrieval.
+
+Set these variables in sessions that use them:
 
 ```bash
 export SCRIBEBASE_URL=http://macmini.local:8765

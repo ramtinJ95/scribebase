@@ -1,12 +1,14 @@
 ---
 name: scribebase-ingest
-description: Upload a local document to a remote ScribeBase server and poll ingestion until it finishes.
+description: Manual invocation only. Upload a local document to a remote ScribeBase server and poll ingestion until it finishes.
 ---
 
 # ScribeBase ingest
 
-Use this skill when the user asks to add, ingest, upload, index, or store a PDF
-or document in the remote ScribeBase knowledge base.
+Manual invocation only. Use this skill only when the user explicitly asks you to
+use `scribebase-ingest` or directly asks to add, ingest, upload, index, or store
+a specific PDF/document in the remote ScribeBase knowledge base. Do not invoke
+this skill proactively.
 
 ## Requirements
 

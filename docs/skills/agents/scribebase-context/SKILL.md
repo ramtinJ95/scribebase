@@ -1,12 +1,14 @@
 ---
 name: scribebase-context
-description: Retrieve cited context from a remote ScribeBase server for the current task.
+description: Manual invocation only. Retrieve cited context from a remote ScribeBase server for the current task.
 ---
 
 # ScribeBase context
 
-Use this skill when the user asks to search ScribeBase, fetch relevant notes,
-retrieve documents into context, or ground the current task in stored sources.
+Manual invocation only. Use this skill only when the user explicitly asks you to
+use `scribebase-context` or directly asks to search ScribeBase, fetch relevant
+notes, retrieve documents into context, or ground the current task in stored
+sources. Do not invoke this skill proactively.
 
 ## Requirements
 

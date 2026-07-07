@@ -1,24 +1,35 @@
 # Remote ScribeBase skill templates
 
-These templates are starting points for agent skills that talk to a ScribeBase
-server running on the Mac mini.
+These templates are starting points for manually invoked agent skills that talk
+to a ScribeBase server running on the Mac mini.
 
 Templates:
 
 - `scribebase-ingest`: upload a local PDF or document and poll the ingestion job.
 - `scribebase-context`: retrieve cited search results or a context pack for the current task.
 
-## Install
+Each template exists in two install layouts:
 
-Copy one or both template directories into the skill directory used by your
-agent harness, then edit only the examples and defaults you want to specialize.
+- `docs/skills/agents/`: copy into `~/.agents/skills/`.
+- `docs/skills/claude/`: copy into `~/.claude/skills/`.
 
-Example:
+The skill text is intentionally explicit that the skill is manual-invocation
+only. Do not configure these as automatically triggered skills.
+
+## Install for `.agents`
 
 ```bash
 mkdir -p ~/.agents/skills
-cp -R docs/skills/scribebase-ingest ~/.agents/skills/
-cp -R docs/skills/scribebase-context ~/.agents/skills/
+cp -R docs/skills/agents/scribebase-ingest ~/.agents/skills/
+cp -R docs/skills/agents/scribebase-context ~/.agents/skills/
+```
+
+## Install for Claude
+
+```bash
+mkdir -p ~/.claude/skills
+cp -R docs/skills/claude/scribebase-ingest ~/.claude/skills/
+cp -R docs/skills/claude/scribebase-context ~/.claude/skills/
 ```
 
 ## Required environment
