@@ -15,6 +15,7 @@ from scribebase.llm.prompts import ANSWER_SYSTEM_PROMPT, QUIZ_SYSTEM_PROMPT
 from scribebase.logging_utils import setup_logging
 from scribebase.models import Chunk, SearchFilters, SearchResult
 from scribebase.paths import ensure_data_layout
+from scribebase.paths import chapter_file_name
 from scribebase.retrieval.context_pack import build_context_pack, save_context_pack
 from scribebase.retrieval.search import format_search_results, search_chunks
 from scribebase.source_registry import find_source, list_manifests
@@ -303,6 +304,56 @@ def _local_filtered_chunks(config: AppConfig, filters: SearchFilters) -> list[Ch
         if filters.language and chunk.language != filters.language:
             continue
         out.append(chunk)
+    if out:
+        return out
+    return _markdown_context_chunks(config, filters)
+
+
+def _markdown_context_chunks(config: AppConfig, filters: SearchFilters) -> list[Chunk]:
+    out: list[Chunk] = []
+    for manifest in list_manifests(config.data_dir):
+        if filters.source_id and manifest.source_id != filters.source_id:
+            continue
+        if filters.title and manifest.title != filters.title:
+            continue
+        if filters.chapter and manifest.chapter != filters.chapter:
+            continue
+        if filters.source_type and manifest.source_type != filters.source_type:
+            continue
+        if filters.course and manifest.course != filters.course:
+            continue
+        if filters.language and manifest.language != filters.language:
+            continue
+        root = Path(manifest.data_dir)
+        md_path = root / "markdown" / "document.md"
+        if filters.chapter or manifest.chapter:
+            chapter = filters.chapter or manifest.chapter
+            chapter_path = root / "markdown" / "chapters" / chapter_file_name(chapter or "")
+            if chapter_path.exists():
+                md_path = chapter_path
+        if not md_path.exists():
+            continue
+        text = md_path.read_text().strip()
+        if not text:
+            continue
+        out.append(
+            Chunk(
+                chunk_id=f"{manifest.source_id}_markdown_context",
+                source_id=manifest.source_id,
+                source_type=manifest.source_type,
+                title=manifest.title,
+                course=manifest.course,
+                chapter=filters.chapter or manifest.chapter,
+                section=None,
+                page_start=None,
+                page_end=None,
+                chunk_index=0,
+                text=text,
+                file_path=str(md_path),
+                extraction_method="mixed",
+                language=manifest.language,
+            )
+        )
     return out
 
 
