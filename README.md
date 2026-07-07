@@ -387,6 +387,9 @@ curl -s http://127.0.0.1:8765/jobs/JOB_ID \
   -H "Authorization: Bearer $SCRIBEBASE_API_TOKEN"
 ```
 
+For a full Mac mini deployment with launchd examples, see
+[`docs/macmini-deployment.md`](docs/macmini-deployment.md).
+
 ## Command reference
 
 ```bash

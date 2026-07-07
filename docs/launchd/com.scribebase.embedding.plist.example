@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.scribebase.embedding</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/ramtin/personal/scribebase</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/llama-server</string>
+    <string>--model</string>
+    <string>/Users/ramtin/personal/scribebase/models/Qwen3-Embedding-4B-Q4_K_M.gguf</string>
+    <string>--embedding</string>
+    <string>--pooling</string>
+    <string>last</string>
+    <string>--ctx-size</string>
+    <string>32768</string>
+    <string>-ngl</string>
+    <string>99</string>
+    <string>--port</string>
+    <string>8080</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/ramtin/scribebase-data/logs/embedding.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/ramtin/scribebase-data/logs/embedding.err.log</string>
+</dict>
+</plist>
