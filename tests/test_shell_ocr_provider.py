@@ -10,3 +10,8 @@ def test_shell_ocr_provider_formats_command(tmp_path) -> None:
         tmp_path / "page.png", tmp_path / "page.md", {"page_number": 7, "source_id": "src"}
     )
     assert cmd == ["ocr", "--in", str(tmp_path / "page.png"), "--out", str(tmp_path / "page.md"), "--page", "7"]
+
+
+def test_shell_ocr_provider_can_use_configured_name() -> None:
+    provider = ShellOCRProvider(OCRProviderConfig(), name="apple_vision")
+    assert provider.name == "apple_vision"

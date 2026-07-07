@@ -114,8 +114,9 @@ def _extract_pdf(
             if ocr == "never":
                 raise RuntimeError(f"Page {page_number} has insufficient text and OCR is disabled")
             provider = provider or _ocr_provider(ocr, config)
-            logger.info("Page %s: insufficient text, rendering at %s DPI", page_number, config.ocr.render_dpi)
-            render_pdf_page(pdf_path, page_index, image_path, config.ocr.render_dpi)
+            render_dpi = provider.config.render_dpi or config.ocr.render_dpi
+            logger.info("Page %s: insufficient text, rendering at %s DPI", page_number, render_dpi)
+            render_pdf_page(pdf_path, page_index, image_path, render_dpi)
             meta = _run_ocr_page(
                 image_path,
                 md_path,
@@ -231,7 +232,7 @@ def _ocr_provider(ocr: str, config: AppConfig) -> ShellOCRProvider:
     provider_cfg = config.ocr.providers.get(provider_name)
     if provider_cfg is None:
         raise ValueError(f"OCR provider not configured: {provider_name}")
-    return ShellOCRProvider(provider_cfg)
+    return ShellOCRProvider(provider_cfg, name=provider_name)
 
 
 def _image_files(path: Path) -> list[Path]:

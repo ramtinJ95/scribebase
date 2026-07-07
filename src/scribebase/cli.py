@@ -36,7 +36,8 @@ def _fail(exc: Exception) -> None:
     if "embedding" in message.lower() or "localhost:8080" in message:
         typer.echo(
             "Start llama.cpp embeddings, e.g.: "
-            "llama-server --model ./model.gguf --embedding --pooling last --port 8080",
+            "llama-server --model ./models/Qwen3-Embedding-4B-Q4_K_M.gguf "
+            "--embedding --pooling last -ngl 99 --port 8080",
             err=True,
         )
     raise typer.Exit(code=1)
@@ -89,7 +90,10 @@ def doctor() -> None:
         typer.echo(f"[{'OK' if ok else 'FAIL'}] embeddings: {msg}")
     except Exception as exc:
         typer.echo(f"[FAIL] embeddings: {exc}")
-        typer.echo("Example: llama-server --model ./model.gguf --embedding --pooling last --port 8080")
+        typer.echo(
+            "Example: llama-server --model ./models/Qwen3-Embedding-4B-Q4_K_M.gguf "
+            "--embedding --pooling last -ngl 99 --port 8080"
+        )
 
     provider = config.ocr.providers.get(config.ocr.default_provider)
     ocr_ok, ocr_msg = _ocr_doctor_message(provider.command if provider else None)

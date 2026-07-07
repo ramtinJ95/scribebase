@@ -36,14 +36,17 @@ The default app config points to `http://localhost:8081` and collection `StudyCh
 
 ## Start a llama.cpp embedding server
 
-Use any OpenAI-compatible llama.cpp embedding model. Example:
+Default quality target: `Qwen3-Embedding-4B-Q4_K_M.gguf`. It was slower than
+smaller models in local indexing tests, but gave the best retrieval quality on
+the Kubernetes book benchmark. Start it with llama.cpp:
 
 ```bash
 llama-server \
-  --model ./models/Qwen3-Embedding-0.6B-Q8_0.gguf \
+  --model ./models/Qwen3-Embedding-4B-Q4_K_M.gguf \
   --embedding \
   --pooling last \
   --ctx-size 32768 \
+  -ngl 99 \
   --port 8080
 ```
 
@@ -53,10 +56,10 @@ Then verify local services:
 uv run study doctor
 ```
 
-Many small embedding models have a 512-token context window. The default
-chunking settings are intentionally conservative for those models; increase
-`chunking.target_chars` only after confirming your embedding server accepts
-larger inputs.
+`--pooling last` is required for Qwen embedding models. Many small embedding
+models have a 512-token context window. The default chunking settings are
+intentionally conservative for those models; increase `chunking.target_chars`
+only after confirming your embedding server accepts larger inputs.
 
 Make sure `embedding.model` in `.study_local/config.yaml` matches the model you
 started. ScribeBase stores this name in chunk metadata and uses it to prevent
@@ -64,7 +67,26 @@ accidental mixed-model retrieval.
 
 ## OCR provider configuration
 
-ScribeBase v1 is model-agnostic. It shells out to your local OCR adapter.
+ScribeBase first reads true-text PDFs with PyMuPDF/PyMuPDF4LLM. OCR is used for
+image inputs, scanned pages, or when you pass `--ocr always`.
+
+The default high-accuracy OCR adapter is GLM-OCR Q8 through a local llama.cpp
+server. In local tests, GLM-OCR was the best accuracy choice, but Metal/GPU
+offload was unstable; run it on CPU with `-ngl 0`:
+
+```bash
+llama-server \
+  -m ./models/ocr/GLM-OCR-Q8_0.gguf \
+  --mmproj ./models/ocr/mmproj-GLM-OCR-Q8_0.gguf \
+  -ngl 0 \
+  --port 8082
+```
+
+macOS users can choose a much faster OCR path with Apple Vision:
+
+```bash
+uv run study extract ./scan.pdf --title "Scan" --source-type book --ocr apple_vision
+```
 
 Default config in `.study_local/config.yaml`:
 
@@ -74,9 +96,15 @@ ocr:
   render_dpi: 300
   providers:
     shell:
-      command: "python ./scripts/run_local_ocr.py --input {input_image} --output {output_md}"
-      timeout_seconds: 300
+      command: "./scripts/run_local_ocr.py --input {input_image} --output {output_md}"
+      timeout_seconds: 900
       model_name: "GLM-OCR"
+      render_dpi:
+    apple_vision:
+      command: "swift ./scripts/run_apple_vision_ocr.swift --input {input_image} --output {output_md}"
+      timeout_seconds: 120
+      model_name: "Apple Vision"
+      render_dpi: 200
 ```
 
 The command template supports:
@@ -87,7 +115,25 @@ The command template supports:
 - `{page_number}`
 - `{source_id}`
 
-Copy `scripts/run_local_ocr.py.example` to `scripts/run_local_ocr.py` and replace the placeholder with GLM-OCR, PaddleOCR-VL, Chandra, Surya, DeepSeek-OCR, or another local OCR command.
+`scripts/run_local_ocr.py` is a committed GLM-OCR adapter. It calls
+`$SCRIBEBASE_OCR_BASE_URL/chat/completions`, defaulting to
+`http://localhost:8082/v1`. Override `SCRIBEBASE_OCR_MODEL`,
+`SCRIBEBASE_OCR_PROMPT`, or `SCRIBEBASE_OCR_MAX_TOKENS` if your local OCR server
+needs different values.
+
+`scripts/run_apple_vision_ocr.swift` uses Apple's on-device Vision framework and
+requires macOS with Swift available.
+
+Benchmark notes from `The Kubernetes Book 2025.pdf`:
+
+| OCR path | Avg sec/page | Word F1 | Decision |
+|---|---:|---:|---|
+| Apple Vision 200 DPI | 0.504 | 0.9777 | Fast macOS option |
+| GLM-OCR Q8 CPU | 14.769 | 0.9882 | Default high-accuracy OCR |
+| Qwen3-VL-2B Q8 Metal | 7.549 | 0.9782 | Good GPU option, not default |
+| PaddleOCR-VL GGUF | 43.236 | 0.9183 | Too slow/lower precision here |
+| DeepSeek-OCR-2 GGUF | n/a | n/a | llama.cpp path unstable |
+| Unsloth DeepSeek-OCR-2 Transformers | failed | 0.6997 on 4 pages | Required CUDA-to-MPS patches and looped on page 300 |
 
 ## Common workflows
 

@@ -6,7 +6,7 @@ Replace the placeholder body with a call to your local OCR runtime, then configu
 ocr:
   providers:
     shell:
-      command: "python ./scripts/run_local_ocr.py --input {input_image} --output {output_md}"
+      command: "./scripts/run_local_ocr.py --input {input_image} --output {output_md}"
 """
 
 from __future__ import annotations

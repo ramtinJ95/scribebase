@@ -16,9 +16,9 @@ class WeaviateConfig(BaseModel):
 class EmbeddingConfig(BaseModel):
     provider: str = "llamacpp"
     base_url: str = "http://localhost:8080/v1"
-    model: str = "Qwen3-Embedding-0.6B-GGUF"
+    model: str = "Qwen3-Embedding-4B-Q4_K_M.gguf"
     timeout_seconds: int = 120
-    batch_size: int = 16
+    batch_size: int = 8
     query_instruction: str = (
         "Instruct: Given a study question, retrieve relevant textbook passages that answer it\n"
         "Query: "
@@ -34,16 +34,28 @@ class PDFDetectionConfig(BaseModel):
 
 
 class OCRProviderConfig(BaseModel):
-    command: str = "python ./scripts/run_local_ocr.py --input {input_image} --output {output_md}"
-    timeout_seconds: int = 300
+    command: str = "./scripts/run_local_ocr.py --input {input_image} --output {output_md}"
+    timeout_seconds: int = 900
     model_name: str | None = "GLM-OCR"
+    render_dpi: int | None = None
 
 
 class OCRConfig(BaseModel):
     default_provider: str = "shell"
     render_dpi: int = 300
     providers: dict[str, OCRProviderConfig] = Field(
-        default_factory=lambda: {"shell": OCRProviderConfig()}
+        default_factory=lambda: {
+            "shell": OCRProviderConfig(),
+            "apple_vision": OCRProviderConfig(
+                command=(
+                    "swift ./scripts/run_apple_vision_ocr.swift "
+                    "--input {input_image} --output {output_md}"
+                ),
+                timeout_seconds=120,
+                model_name="Apple Vision",
+                render_dpi=200,
+            ),
+        }
     )
 
 
