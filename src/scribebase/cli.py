@@ -21,7 +21,7 @@ from scribebase.retrieval.context_pack import build_context_pack, save_context_p
 from scribebase.retrieval.search import format_search_results, search_chunks
 from scribebase.source_registry import find_source, list_manifests
 
-app = typer.Typer(help="Local OCR → Markdown → Weaviate RAG study app.")
+app = typer.Typer(help="Local OCR → Markdown → Weaviate RAG app.")
 sources_app = typer.Typer(help="List and inspect sources.")
 chunks_app = typer.Typer(help="Inspect chunks.")
 app.add_typer(sources_app, name="sources")

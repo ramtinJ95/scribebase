@@ -1,6 +1,6 @@
 # ScribeBase
 
-ScribeBase is a local-first CLI study app for turning PDFs, scanned documents, images, and handwritten notes into page-cited Markdown and searchable RAG context.
+ScribeBase is a local-first CLI app for turning PDFs, scanned documents, images, and handwritten notes into page-cited Markdown and searchable RAG context.
 
 It uses local tooling for extraction, OCR, embeddings, indexing, and retrieval. A frontier LLM is optional and only receives selected retrieved context.
 
@@ -21,10 +21,10 @@ No Ollama dependency is used.
 
 ```bash
 uv sync --extra dev
-uv run study init
+uv run scribebase init
 ```
 
-Or install the package and use the `study` console script from your environment.
+Or install the package and use the `scribebase` console script from your environment.
 
 ## Start local Weaviate
 
@@ -53,7 +53,7 @@ llama-server \
 Then verify local services:
 
 ```bash
-uv run study doctor
+uv run scribebase doctor
 ```
 
 `--pooling last` is required for Qwen embedding models. Many small embedding
@@ -85,7 +85,7 @@ llama-server \
 macOS users can choose a much faster OCR path with Apple Vision:
 
 ```bash
-uv run study extract ./scan.pdf --title "Scan" --source-type book --ocr apple_vision
+uv run scribebase extract ./scan.pdf --title "Scan" --source-type book --ocr apple_vision
 ```
 
 Default config in `.study_local/config.yaml`:
@@ -140,7 +140,7 @@ Benchmark notes from `The Kubernetes Book 2025.pdf`:
 ### Ingest a true-text PDF
 
 ```bash
-uv run study ingest ./books/biology.pdf \
+uv run scribebase ingest ./books/biology.pdf \
   --title "Biology 101" \
   --source-type book \
   --language en
@@ -149,7 +149,7 @@ uv run study ingest ./books/biology.pdf \
 ### Ingest a scanned PDF
 
 ```bash
-uv run study ingest ./scans/chapter_4_scanned.pdf \
+uv run scribebase ingest ./scans/chapter_4_scanned.pdf \
   --title "Cognitive Psychology" \
   --source-type book \
   --chapter "4" \
@@ -159,7 +159,7 @@ uv run study ingest ./scans/chapter_4_scanned.pdf \
 ### Ingest handwritten note images
 
 ```bash
-uv run study ingest ./notes/2026-07-lecture-1/ \
+uv run scribebase ingest ./notes/2026-07-lecture-1/ \
   --title "Lecture 1 Notes" \
   --source-type notes \
   --course "Neuroscience" \
@@ -169,19 +169,19 @@ uv run study ingest ./notes/2026-07-lecture-1/ \
 ### Extract without indexing
 
 ```bash
-uv run study extract ./book.pdf --title "Book" --source-type book --ocr auto
+uv run scribebase extract ./book.pdf --title "Book" --source-type book --ocr auto
 ```
 
 ### Index an existing extracted source
 
 ```bash
-uv run study index --source-id SOURCE_ID
+uv run scribebase index --source-id SOURCE_ID
 ```
 
 ### Search
 
 ```bash
-uv run study search "working memory limitations" \
+uv run scribebase search "working memory limitations" \
   --title "Cognitive Psychology" \
   --chapter "4" \
   --top-k 12
@@ -190,7 +190,7 @@ uv run study search "working memory limitations" \
 ### Ask
 
 ```bash
-uv run study ask "Explain working memory limitations using this chapter." \
+uv run scribebase ask "Explain working memory limitations using this chapter." \
   --title "Cognitive Psychology" \
   --chapter "4" \
   --top-k 12
@@ -201,7 +201,7 @@ If LLM config is disabled or the API key is missing, ScribeBase saves a context 
 ### Quiz
 
 ```bash
-uv run study quiz \
+uv run scribebase quiz \
   --title "Cognitive Psychology" \
   --chapter "4" \
   --questions 20 \
@@ -213,10 +213,10 @@ If no LLM is configured, this saves a quiz prompt/context pack under `.study_loc
 ### Inspect local source of truth
 
 ```bash
-uv run study sources list
-uv run study sources show SOURCE_ID
-uv run study chunks list --source-id SOURCE_ID
-uv run study chunks show CHUNK_ID
+uv run scribebase sources list
+uv run scribebase sources show SOURCE_ID
+uv run scribebase chunks list --source-id SOURCE_ID
+uv run scribebase chunks show CHUNK_ID
 ```
 
 ## Data layout
@@ -263,8 +263,8 @@ If `OPENAI_API_KEY` is absent, commands do not fail; they save context packs.
 ## Rebuild index
 
 ```bash
-uv run study rebuild-index --source-id SOURCE_ID
-uv run study rebuild-index --all
+uv run scribebase rebuild-index --source-id SOURCE_ID
+uv run scribebase rebuild-index --all
 ```
 
 Change embedding models only with an index rebuild. Search rejects mixed embedding model results by default; pass `--allow-model-mismatch` only when you deliberately want that.

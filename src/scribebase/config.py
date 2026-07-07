@@ -20,7 +20,7 @@ class EmbeddingConfig(BaseModel):
     timeout_seconds: int = 120
     batch_size: int = 8
     query_instruction: str = (
-        "Instruct: Given a study question, retrieve relevant textbook passages that answer it\n"
+        "Instruct: Given a question, retrieve relevant source passages that answer it\n"
         "Query: "
     )
     normalize: bool = True

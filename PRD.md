@@ -57,7 +57,7 @@ Use the frontier model only for reasoning over selected retrieved context.
 ### Workflow A: Ingest a true text PDF
 
 ```bash
-study ingest ./books/biology.pdf \
+scribebase ingest ./books/biology.pdf \
   --title "Biology 101" \
   --source-type book \
   --language en
@@ -78,7 +78,7 @@ Expected behavior:
 ### Workflow B: Ingest a scanned PDF
 
 ```bash
-study ingest ./scans/chapter_4_scanned.pdf \
+scribebase ingest ./scans/chapter_4_scanned.pdf \
   --title "Cognitive Psychology" \
   --source-type book \
   --chapter "4" \
@@ -97,7 +97,7 @@ Expected behavior:
 ### Workflow C: Ingest handwritten notes
 
 ```bash
-study ingest ./notes/2026-07-lecture-1/ \
+scribebase ingest ./notes/2026-07-lecture-1/ \
   --title "Lecture 1 Notes" \
   --source-type notes \
   --course "Neuroscience" \
@@ -115,7 +115,7 @@ Expected behavior:
 ### Workflow D: Ask a question over a source/chapter
 
 ```bash
-study ask "Explain working memory limitations using this chapter." \
+scribebase ask "Explain working memory limitations using this chapter." \
   --title "Cognitive Psychology" \
   --chapter "4" \
   --top-k 12
@@ -133,7 +133,7 @@ Expected behavior:
 ### Workflow E: Generate a quiz
 
 ```bash
-study quiz \
+scribebase quiz \
   --title "Cognitive Psychology" \
   --chapter "4" \
   --questions 20 \
@@ -215,7 +215,7 @@ embedding:
   base_url: "http://localhost:8080/v1"
   model: "Qwen3-Embedding-0.6B-GGUF"
   dimension: null
-  query_instruction: "Instruct: Given a study question, retrieve relevant textbook passages that answer it\nQuery: "
+  query_instruction: "Instruct: Given a question, retrieve relevant source passages that answer it\nQuery: "
 ```
 
 The embedding dimension should be detected from the first successful embedding call and stored in the index metadata.
@@ -554,7 +554,7 @@ embedding:
   model: "Qwen3-Embedding-0.6B-GGUF"
   timeout_seconds: 120
   batch_size: 16
-  query_instruction: "Instruct: Given a study question, retrieve relevant textbook passages that answer it\nQuery: "
+  query_instruction: "Instruct: Given a question, retrieve relevant source passages that answer it\nQuery: "
   normalize: true
 ```
 
@@ -600,7 +600,7 @@ For document chunks:
 For user queries:
 
 ```text
-Instruct: Given a study question, retrieve relevant textbook passages that answer it
+Instruct: Given a question, retrieve relevant source passages that answer it
 Query: <user question>
 ```
 
@@ -697,7 +697,7 @@ The app should support filters:
 Example command:
 
 ```bash
-study search "working memory limitations" \
+scribebase search "working memory limitations" \
   --title "Cognitive Psychology" \
   --chapter "4" \
   --top-k 12
@@ -778,7 +778,7 @@ If enabled:
 ### Default answer prompt
 
 ```text
-You are a study tutor.
+You are a source-grounded assistant.
 
 Use only the supplied context.
 Cite every factual claim with page references from the context.
@@ -789,7 +789,7 @@ Be clear, concrete, and pedagogical.
 ### Default quiz prompt
 
 ```text
-Create a study quiz from the supplied context.
+Create a quiz from the supplied context.
 
 Requirements:
 - Use only the supplied context.
@@ -804,15 +804,15 @@ Requirements:
 
 Use Typer.
 
-### `study init`
+### `scribebase init`
 
 Creates config and directory structure.
 
 ```bash
-study init --data-dir .study_local
+scribebase init --data-dir .study_local
 ```
 
-### `study doctor`
+### `scribebase doctor`
 
 Checks:
 
@@ -824,15 +824,15 @@ Checks:
 6. Optional LLM API config.
 
 ```bash
-study doctor
+scribebase doctor
 ```
 
-### `study ingest`
+### `scribebase ingest`
 
 Ingests source and indexes by default.
 
 ```bash
-study ingest PATH \
+scribebase ingest PATH \
   --title TEXT \
   --source-type book|notes|paper|article|other \
   --course TEXT \
@@ -842,45 +842,45 @@ study ingest PATH \
   --no-index
 ```
 
-### `study extract`
+### `scribebase extract`
 
 Only extract/OCR to Markdown, no indexing.
 
 ```bash
-study extract PATH --title TEXT --ocr auto
+scribebase extract PATH --title TEXT --ocr auto
 ```
 
-### `study index`
+### `scribebase index`
 
 Index existing extracted source into Weaviate.
 
 ```bash
-study index --source-id SOURCE_ID
+scribebase index --source-id SOURCE_ID
 ```
 
-### `study rebuild-index`
+### `scribebase rebuild-index`
 
 Delete and rebuild chunks/vectors for source or all sources.
 
 ```bash
-study rebuild-index --source-id SOURCE_ID
-study rebuild-index --all
+scribebase rebuild-index --source-id SOURCE_ID
+scribebase rebuild-index --all
 ```
 
-### `study search`
+### `scribebase search`
 
 Retrieve chunks without LLM answering.
 
 ```bash
-study search "query text" --title "Cognitive Psychology" --chapter "4"
+scribebase search "query text" --title "Cognitive Psychology" --chapter "4"
 ```
 
-### `study ask`
+### `scribebase ask`
 
 Retrieve and answer or produce context pack.
 
 ```bash
-study ask "question text" \
+scribebase ask "question text" \
   --title "Cognitive Psychology" \
   --chapter "4" \
   --top-k 12 \
@@ -895,34 +895,34 @@ chapter   use whole chapter Markdown if available
 auto      use whole chapter if it fits, otherwise RAG
 ```
 
-### `study quiz`
+### `scribebase quiz`
 
 Generate quiz from chapter/source/retrieved context.
 
 ```bash
-study quiz \
+scribebase quiz \
   --title "Cognitive Psychology" \
   --chapter "4" \
   --questions 20 \
   --types mcq,short-answer,flashcard
 ```
 
-### `study sources`
+### `scribebase sources`
 
 List known sources.
 
 ```bash
-study sources list
-study sources show SOURCE_ID
+scribebase sources list
+scribebase sources show SOURCE_ID
 ```
 
-### `study chunks`
+### `scribebase chunks`
 
 Inspect chunks.
 
 ```bash
-study chunks list --source-id SOURCE_ID
-study chunks show CHUNK_ID
+scribebase chunks list --source-id SOURCE_ID
+scribebase chunks show CHUNK_ID
 ```
 
 ## 20. Docker Compose for local Weaviate
@@ -978,7 +978,7 @@ llama-server \
 Then:
 
 ```bash
-study doctor
+scribebase doctor
 ```
 
 should verify:
@@ -1010,7 +1010,7 @@ embedding:
   model: "Qwen3-Embedding-0.6B-GGUF"
   timeout_seconds: 120
   batch_size: 16
-  query_instruction: "Instruct: Given a study question, retrieve relevant textbook passages that answer it\nQuery: "
+  query_instruction: "Instruct: Given a question, retrieve relevant source passages that answer it\nQuery: "
   normalize: true
 
 pdf_detection:
@@ -1125,17 +1125,17 @@ Mocks are acceptable for llama.cpp and OCR in CI.
 
 v1 is complete when:
 
-1. User can run `study init`.
+1. User can run `scribebase init`.
 2. User can start local Weaviate using provided Docker Compose.
-3. User can start their own llama.cpp embedding server and confirm with `study doctor`.
+3. User can start their own llama.cpp embedding server and confirm with `scribebase doctor`.
 4. User can ingest a true text PDF and get Markdown output.
 5. User can ingest a scanned/image source through the shell OCR provider.
 6. User can index chunks into Weaviate using self-provided local embeddings.
-7. User can run `study search` and see relevant chunks with page metadata.
-8. User can run `study ask` and either:
+7. User can run `scribebase search` and see relevant chunks with page metadata.
+8. User can run `scribebase ask` and either:
    - receive an LLM answer if configured, or
    - receive a saved context pack if LLM is disabled.
-9. User can run `study quiz` and receive either:
+9. User can run `scribebase quiz` and receive either:
    - generated quiz output if LLM is configured, or
    - a saved quiz prompt context pack if LLM is disabled.
 10. No Ollama dependency exists anywhere in the app.
@@ -1147,11 +1147,11 @@ v1 is complete when:
 ## 27. Suggested repository structure
 
 ```text
-local-study-rag/
+scribebase/
   README.md
   pyproject.toml
   docker-compose.weaviate.yml
-  study/
+  scribebase/
     __init__.py
     cli.py
     config.py
@@ -1218,7 +1218,7 @@ local-study-rag/
 7. Keep OCR model execution abstract through the shell provider.
 8. Keep original files and extracted Markdown as source of truth.
 9. Make the app useful even without an LLM API key by writing context packs.
-10. Use clear errors and a `study doctor` command.
+10. Use clear errors and a `scribebase doctor` command.
 11. Include a good README with:
     - installation,
     - Weaviate Docker Compose,
