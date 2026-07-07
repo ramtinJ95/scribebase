@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+SourceType = Literal["book", "notes", "paper", "article", "other"]
+Language = Literal["en", "sv", "mixed", "unknown"]
+
+
+class ExtractionSummary(BaseModel):
+    pages_total: int = 0
+    pages_extracted_with_pymupdf4llm: int = 0
+    pages_ocr: int = 0
+    ocr_provider: str | None = None
+    ocr_model: str | None = None
+
+
+class EmbeddingSummary(BaseModel):
+    embedding_model: str | None = None
+    embedding_dimension: int | None = None
+    embedding_base_url: str | None = None
+    indexed_in_weaviate: bool = False
+    weaviate_collection: str | None = None
+
+
+class SourceManifest(BaseModel):
+    schema_version: str = "1.0"
+    source_id: str
+    title: str
+    source_type: SourceType = "other"
+    course: str | None = None
+    chapter: str | None = None
+    language: Language = "unknown"
+    original_path: str
+    data_dir: str
+    created_at: datetime
+    updated_at: datetime
+    extraction_summary: ExtractionSummary = Field(default_factory=ExtractionSummary)
+    embedding_summary: EmbeddingSummary = Field(default_factory=EmbeddingSummary)
+
+
+class PageMetadata(BaseModel):
+    source_id: str
+    page_number: int
+    page_index: int
+    input_type: Literal["pdf_page", "image"]
+    text_layer_detected: bool
+    extraction_method: Literal["pymupdf4llm", "pymupdf", "ocr", "failed"]
+    ocr_provider: str | None = None
+    ocr_model: str | None = None
+    image_path: str | None = None
+    markdown_path: str
+    char_count: int = 0
+    word_count: int = 0
+    quality_flags: list[str] = Field(default_factory=list)
+
+
+class OCRResult(BaseModel):
+    markdown_path: Path
+    text: str
+    provider: str
+    model: str | None = None
+    confidence: float | None = None
+    warnings: list[str] = Field(default_factory=list)
+    raw_output_path: Path | None = None
+
+
+class TextQuality(BaseModel):
+    char_count: int
+    word_count: int
+    alpha_ratio: float
+    replacement_char_ratio: float
+    avg_word_length: float
+    line_count: int
+    is_true_text: bool
+    flags: list[str] = Field(default_factory=list)
+
+
+class Chunk(BaseModel):
+    chunk_id: str
+    source_id: str
+    source_type: str
+    title: str
+    course: str | None = None
+    chapter: str | None = None
+    section: str | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    chunk_index: int
+    text: str
+    file_path: str
+    extraction_method: str
+    ocr_model: str | None = None
+    language: str | None = None
+    embedding_model: str | None = None
+    embedding_dimension: int | None = None
+    chunker_version: str = "v1"
+    created_at: datetime | None = None
+
+
+class SearchFilters(BaseModel):
+    source_id: str | None = None
+    title: str | None = None
+    source_type: str | None = None
+    course: str | None = None
+    chapter: str | None = None
+    section: str | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    language: str | None = None
+
+
+class SearchResult(BaseModel):
+    chunk: Chunk
+    score: float | None = None
+    explain_score: str | None = None

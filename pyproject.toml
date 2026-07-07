@@ -3,10 +3,29 @@ name = "scribebase"
 version = "0.1.0"
 description = "Local-first OCR, Markdown, and Weaviate RAG study app."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 authors = [
   { name = "Ramtin Javanmardi" }
 ]
+dependencies = [
+  "httpx>=0.27",
+  "pydantic>=2.7",
+  "pymupdf>=1.24",
+  "pymupdf4llm>=0.0.17",
+  "python-dotenv>=1.0",
+  "pyyaml>=6.0",
+  "typer>=0.12",
+  "weaviate-client>=4.7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.5",
+]
+
+[project.scripts]
+study = "scribebase.cli:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -17,4 +36,4 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py314"
+target-version = "py311"
