@@ -1,58 +1,48 @@
 ---
 name: scribebase-ingest
-description: Manual invocation only. Upload a local document to a remote ScribeBase server and poll ingestion until it finishes.
+description: Upload a local document to a remote ScribeBase server and poll ingestion.
+disable-model-invocation: true
 ---
 
 # ScribeBase ingest
 
-Manual invocation only. Use this skill only when the user explicitly asks you to
-use `scribebase-ingest` or directly asks to add, ingest, upload, index, or store
-a specific PDF/document in the remote ScribeBase knowledge base. Do not invoke
-this skill proactively.
+User-invoked only. If this skill was not explicitly named by the user, stop.
 
-## Requirements
+## Gate
 
-The current shell must have:
+Before uploading, confirm all required inputs are present:
 
-```bash
-SCRIBEBASE_URL=http://macmini.local:8765
-SCRIBEBASE_API_TOKEN=...
-```
-
-If either variable is missing, ask the user for the missing value before trying
-to upload.
-
-## Inputs to collect
-
-Required:
-
-- local file path
+- `SCRIBEBASE_URL`
+- `SCRIBEBASE_API_TOKEN`
+- local file path that exists
 - title
 
-Optional:
+Ask for missing required inputs. Do not guess title from filename unless the user
+asks you to.
 
-- `source_type`: `book`, `paper`, `article`, `notes`, or `other`
-- `course`
-- `chapter`
-- `language`: `en`, `sv`, `mixed`, or `unknown`
-- `ocr`: `auto`, `always`, `never`, `shell`, or `apple_vision`
-- `no_index`: set only when the user wants extraction without Weaviate indexing
+## Defaults
 
-Use these safe defaults unless the user says otherwise:
+Use these only when the user does not specify a value:
 
 - `source_type=${SCRIBEBASE_DEFAULT_SOURCE_TYPE:-paper}`
 - `language=${SCRIBEBASE_DEFAULT_LANGUAGE:-en}`
 - `ocr=auto`
 - `no_index=false`
 
-## Procedure
+Optional fields you may pass through when provided:
 
-1. Verify the file exists locally.
-2. Check server health.
-3. Upload the file with `POST /ingest`.
-4. Extract `job_id` from the response.
-5. Poll `GET /jobs/{job_id}` until status is `succeeded` or `failed`.
-6. Report `source_id` on success. Report the job `error` on failure.
+- `course`
+- `chapter`
+- `continue_on_ocr_error`
+
+## Run
+
+1. Call `/health`. Completion: the server responds.
+2. Upload with `POST /ingest`. Completion: response has `job_id`.
+3. Poll `GET /jobs/{job_id}`. Completion: status is `succeeded` or `failed`.
+4. Report outcome. Completion: success includes `source_id`; failure includes `error`.
+
+Do not say the document is searchable before the job reaches `succeeded`.
 
 ## Commands
 
@@ -81,23 +71,9 @@ curl -s "$SCRIBEBASE_URL/jobs/JOB_ID" \
   -H "Authorization: Bearer $SCRIBEBASE_API_TOKEN"
 ```
 
-## Response handling
+## Status meanings
 
-A queued job looks like:
-
-```json
-{
-  "job_id": "...",
-  "status": "queued",
-  "title": "Document Title",
-  "source_id": null,
-  "error": null
-}
-```
-
-Terminal statuses:
-
-- `succeeded`: ingestion completed. Use `source_id` in the response.
-- `failed`: ingestion failed. Show the `error` field and suggest checking the Mac mini logs.
-
-Do not claim the document is searchable until the job status is `succeeded`.
+- `queued`: upload succeeded; ingestion has not started.
+- `running`: extraction and/or indexing is in progress.
+- `succeeded`: ingestion completed; use `source_id` for future retrieval.
+- `failed`: ingestion failed; show `error` and suggest checking Mac mini logs.

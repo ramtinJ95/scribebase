@@ -1,38 +1,39 @@
 ---
 name: scribebase-context
-description: Manual invocation only. Retrieve cited context from a remote ScribeBase server for the current task.
+description: Retrieve cited context from a remote ScribeBase server.
+disable-model-invocation: true
 ---
 
 # ScribeBase context
 
-Manual invocation only. Use this skill only when the user explicitly asks you to
-use `scribebase-context` or directly asks to search ScribeBase, fetch relevant
-notes, retrieve documents into context, or ground the current task in stored
-sources. Do not invoke this skill proactively.
+User-invoked only. If this skill was not explicitly named by the user, stop.
 
-## Requirements
+## Gate
 
-The current shell must have:
+Before retrieval, confirm all required inputs are present:
 
-```bash
-SCRIBEBASE_URL=http://macmini.local:8765
-SCRIBEBASE_API_TOKEN=...
-```
+- `SCRIBEBASE_URL`
+- `SCRIBEBASE_API_TOKEN`
+- query or task to retrieve context for
 
-If either variable is missing, ask the user for the missing value before trying
-to search.
+Ask for missing required inputs. Preserve user-provided filters exactly unless
+they ask you to broaden or narrow the search.
 
-## Retrieval modes
+## Mode
 
-Prefer `/context` when the user needs material to use in the current answer or
-task. It returns a ready-to-paste context pack with citations.
+- Use `/context` when the user needs source material for the current answer or task.
+- Use `/search` when the user wants ranked snippets, source IDs, or chunk IDs.
 
-Use `/search` when the user only wants ranked snippets, source IDs, chunk IDs,
-or a quick inventory of matching material.
+Default retrieval settings:
+
+- `top_k=8` for normal context gathering
+- `top_k=12` for broad or ambiguous questions
+- omit `alpha` unless requested
+- keep `allow_model_mismatch=false` unless the user accepts stale mixed-model results
 
 ## Filters
 
-Use filters when the user provides them:
+Pass any provided filter through in the request body:
 
 - `source_id`
 - `title`
@@ -44,12 +45,12 @@ Use filters when the user provides them:
 - `page_end`
 - `language`
 
-Default retrieval settings:
+## Run
 
-- `top_k=8` for normal context gathering
-- `top_k=12` for broad or ambiguous questions
-- omit `alpha` unless the user asks to tune retrieval
-- keep `allow_model_mismatch=false` unless the user explicitly accepts stale mixed-model results
+1. Call `/health`. Completion: the server responds.
+2. Choose `/context` or `/search`. Completion: request matches the user's goal.
+3. Inspect the response. Completion: results are present, or you can state none matched.
+4. Use returned material. Completion: citations and chunk IDs are preserved.
 
 ## Commands
 
@@ -66,7 +67,7 @@ curl -s "$SCRIBEBASE_URL/sources" \
   -H "Authorization: Bearer $SCRIBEBASE_API_TOKEN"
 ```
 
-Get a context pack:
+Context pack:
 
 ```bash
 curl -s "$SCRIBEBASE_URL/context" \
@@ -98,21 +99,13 @@ curl -s "$SCRIBEBASE_URL/search" \
 
 ## Response handling
 
-For `/context`, use `context_pack` as the retrieved source material. Preserve
-citations and chunk IDs when answering.
+For `/context`, use `context_pack` as source material.
 
-For `/search`, inspect `results[].chunk`:
+For `/search`, inspect `results[].chunk.title`, `source_id`, `chapter`, pages,
+`chunk_id`, `text`, and `score`.
 
-- `title`
-- `source_id`
-- `chapter`
-- `page_start` / `page_end`
-- `chunk_id`
-- `text`
-- `score`
-
-If no results come back, say that ScribeBase returned no matching context and
-ask whether to broaden filters or try different wording.
+If no results return, say ScribeBase returned no matching context and ask whether
+to broaden filters or try different wording.
 
 If the server returns `502`, the API is up but Weaviate or embeddings failed.
 Suggest running `uv run scribebase doctor` on the Mac mini.
