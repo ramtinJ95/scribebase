@@ -63,6 +63,14 @@ Check the setup:
 uv run scribebase doctor
 ```
 
+Optional: start the read-only HTTP API for remote search/context clients:
+
+```bash
+uv sync --extra server
+export SCRIBEBASE_API_TOKEN=change-me
+uv run scribebase serve --host 0.0.0.0 --port 8765
+```
+
 Ingest a PDF:
 
 ```bash
@@ -329,11 +337,40 @@ SCRIBEBASE_API_TOKEN=change-me
 
 See `.env.example` for a copyable template.
 
+## Read-only HTTP API
+
+Install the server extra and set a bearer token before starting the API:
+
+```bash
+uv sync --extra server
+export SCRIBEBASE_API_TOKEN=change-me
+uv run scribebase serve
+```
+
+Endpoints:
+
+- `GET /health`: readiness summary for ScribeBase, Weaviate, and embeddings.
+- `GET /sources`: list indexed source manifests.
+- `POST /search`: hybrid search over chunks.
+- `POST /context`: search and return a ready-to-paste context pack.
+
+Protected endpoints require `Authorization: Bearer $SCRIBEBASE_API_TOKEN`.
+
+Example search:
+
+```bash
+curl -s http://127.0.0.1:8765/search \
+  -H "Authorization: Bearer $SCRIBEBASE_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"explain kubelet eviction","filters":{"source_type":"book"},"top_k":5}'
+```
+
 ## Command reference
 
 ```bash
 scribebase init
 scribebase doctor
+scribebase serve [--host HOST] [--port PORT]
 scribebase extract PATH --title TITLE [--ocr auto|always|never|shell|apple_vision]
 scribebase ingest PATH --title TITLE [--no-index]
 scribebase index --source-id SOURCE_ID

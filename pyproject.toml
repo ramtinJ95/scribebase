@@ -20,8 +20,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "fastapi>=0.115",
   "pytest>=8.0",
   "ruff>=0.5",
+]
+server = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
 ]
 
 [project.scripts]
