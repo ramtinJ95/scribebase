@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 SourceType = Literal[
@@ -25,8 +25,12 @@ def normalize_tags(tags: list[str] | str | None) -> list[str]:
         return []
     if isinstance(tags, str):
         values = tags.split(",")
-    else:
+    elif isinstance(tags, list):
+        if not all(isinstance(value, str) for value in tags):
+            raise ValueError("tags must be a comma-separated string or a list of strings")
         values = [part for value in tags for part in value.split(",")]
+    else:
+        raise ValueError("tags must be a comma-separated string or a list of strings")
     return [value.strip() for value in values if value.strip()]
 
 
@@ -59,6 +63,21 @@ class GenericMetadata(BaseModel):
     external_id: str | None = None
     collection: str | None = None
     summary: str | None = None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, value: list[str] | str | None) -> list[str]:
+        return normalize_tags(value)
+
+
+class SourceMetadataInput(GenericMetadata):
+    model_config = ConfigDict(extra="ignore")
+
+    title: str | None = None
+    source_type: SourceType | None = None
+    course: str | None = None
+    chapter: str | None = None
+    language: Language | None = None
 
 
 class SourceManifest(GenericMetadata):

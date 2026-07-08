@@ -184,6 +184,53 @@ def test_ingest_upload_accepts_text_file(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "uploads" / f"{body['job_id']}_notes.txt").read_bytes() == b"plain text notes"
 
 
+def test_ingest_upload_uses_markdown_frontmatter_defaults(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr("scribebase.server.run_ingest_job", lambda *_: None)
+
+    response = client.post(
+        "/ingest",
+        headers=_auth(),
+        files={
+            "file": (
+                "article.md",
+                b"---\n"
+                b"title: Frontmatter Article\n"
+                b"source_type: article\n"
+                b"language: en\n"
+                b"tags: [kubernetes, gitops]\n"
+                b"origin: company_blog\n"
+                b"collection: infra-reading\n"
+                b"---\n\n"
+                b"# Body\n",
+                "text/markdown",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "Frontmatter Article"
+    assert body["source_type"] == "article"
+    assert body["language"] == "en"
+    assert body["tags"] == ["kubernetes", "gitops"]
+    assert body["origin"] == "company_blog"
+    assert body["collection"] == "infra-reading"
+
+
+def test_ingest_upload_without_title_or_frontmatter_returns_400(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/ingest",
+        headers=_auth(),
+        files={"file": ("notes.txt", b"plain text notes", "text/plain")},
+    )
+
+    assert response.status_code == 400
+    assert "title is required" in response.json()["detail"]
+
+
 def test_job_status_returns_persisted_job(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
     monkeypatch.setattr("scribebase.server.run_ingest_job", lambda *_: None)

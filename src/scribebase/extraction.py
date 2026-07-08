@@ -5,7 +5,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 
 from scribebase.config import AppConfig
 from scribebase.extractors.image_renderer import render_pdf_page
@@ -15,8 +15,9 @@ from scribebase.extractors.pymupdf_extractor import (
     page_has_images,
     pdf_page_count,
 )
+from scribebase.markdown.frontmatter import read_markdown_with_frontmatter
 from scribebase.markdown.normalize import combine_pages, normalize_page_markdown
-from scribebase.models import PageMetadata, SourceManifest, TextQuality
+from scribebase.models import PageMetadata, SourceManifest, SourceMetadataInput, TextQuality
 from scribebase.ocr.shell_provider import ShellOCRProvider
 from scribebase.paths import chapter_file_name, source_subdirs
 from scribebase.pdf_router import evaluate_text_quality
@@ -25,6 +26,7 @@ from scribebase.source_registry import create_manifest, write_manifest
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"}
 MARKDOWN_EXTS = {".md", ".markdown"}
 TEXT_EXTS = {".txt"}
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -36,11 +38,11 @@ class PDFPageRoute:
 
 def extract_source(
     input_path: Path,
-    title: str,
-    source_type: str,
+    title: str | None,
+    source_type: str | None,
     course: str | None,
     chapter: str | None,
-    language: str,
+    language: str | None,
     ocr: str,
     config: AppConfig,
     logger,
@@ -61,6 +63,14 @@ def extract_source(
     input_path = input_path.expanduser().resolve()
     if not input_path.exists():
         raise FileNotFoundError(f"Input path does not exist: {input_path}")
+    frontmatter = _frontmatter_metadata(input_path)
+    title = _resolve_field(title, frontmatter.title)
+    if not title:
+        raise ValueError("title is required unless provided by Markdown frontmatter")
+    source_type = _resolve_field(source_type, frontmatter.source_type) or "other"
+    course = _resolve_field(course, frontmatter.course)
+    chapter = _resolve_field(chapter, frontmatter.chapter)
+    language = _resolve_field(language, frontmatter.language) or "unknown"
     manifest = create_manifest(
         config.data_dir,
         input_path,
@@ -69,18 +79,18 @@ def extract_source(
         course,
         chapter,
         language,
-        tags=tags,
-        origin=origin,
-        publisher=publisher,
-        author=author,
-        created_at_source=created_at_source,
-        updated_at_source=updated_at_source,
-        retrieved_at=retrieved_at,
-        url=url,
-        canonical_url=canonical_url,
-        external_id=external_id,
-        collection=collection,
-        summary=summary,
+        tags=tags if tags is not None else frontmatter.tags,
+        origin=_resolve_field(origin, frontmatter.origin),
+        publisher=_resolve_field(publisher, frontmatter.publisher),
+        author=_resolve_field(author, frontmatter.author),
+        created_at_source=_resolve_field(created_at_source, frontmatter.created_at_source),
+        updated_at_source=_resolve_field(updated_at_source, frontmatter.updated_at_source),
+        retrieved_at=_resolve_field(retrieved_at, frontmatter.retrieved_at),
+        url=_resolve_field(url, frontmatter.url),
+        canonical_url=_resolve_field(canonical_url, frontmatter.canonical_url),
+        external_id=_resolve_field(external_id, frontmatter.external_id),
+        collection=_resolve_field(collection, frontmatter.collection),
+        summary=_resolve_field(summary, frontmatter.summary),
     )
     logger.info("Ingest source: %s (%s)", manifest.title, manifest.source_id)
     paths = source_subdirs(config.data_dir, manifest.source_id)
@@ -299,7 +309,10 @@ def _extract_text_document(
     paths = source_subdirs(config.data_dir, manifest.source_id)
     method: Literal["markdown", "text"] = input_type
     logger.info("Document: using %s extraction", method)
-    raw_text = text_path.read_text(encoding="utf-8-sig")
+    if input_type == "markdown":
+        _, raw_text = read_markdown_with_frontmatter(text_path)
+    else:
+        raw_text = text_path.read_text(encoding="utf-8-sig")
     if not raw_text.strip():
         raise RuntimeError(f"Empty text document: {text_path}")
     md_path = paths["markdown"] / "page_0001.md"
@@ -320,6 +333,17 @@ def _extract_text_document(
     )
     _write_page_metadata(paths["metadata"], meta)
     return [meta]
+
+
+def _frontmatter_metadata(input_path: Path) -> SourceMetadataInput:
+    if input_path.suffix.lower() not in MARKDOWN_EXTS:
+        return SourceMetadataInput()
+    metadata, _ = read_markdown_with_frontmatter(input_path)
+    return metadata
+
+
+def _resolve_field(explicit: T | None, default: T | None) -> T | None:
+    return explicit if explicit is not None else default
 
 
 def _run_ocr_page(

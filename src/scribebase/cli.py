@@ -143,11 +143,11 @@ def serve(
 @app.command()
 def extract(
     path: Path,
-    title: str = typer.Option(...),
-    source_type: str = typer.Option("other"),
+    title: Optional[str] = typer.Option(None),
+    source_type: Optional[str] = None,
     course: Optional[str] = None,
     chapter: Optional[str] = None,
-    language: str = "unknown",
+    language: Optional[str] = None,
     tags: Optional[str] = typer.Option(None, help="Comma-separated tags."),
     origin: Optional[str] = None,
     publisher: Optional[str] = None,
@@ -197,11 +197,11 @@ def extract(
 @app.command()
 def ingest(
     path: Path,
-    title: str = typer.Option(...),
-    source_type: str = typer.Option("other"),
+    title: Optional[str] = typer.Option(None),
+    source_type: Optional[str] = None,
     course: Optional[str] = None,
     chapter: Optional[str] = None,
-    language: str = "unknown",
+    language: Optional[str] = None,
     tags: Optional[str] = typer.Option(None, help="Comma-separated tags."),
     origin: Optional[str] = None,
     publisher: Optional[str] = None,
