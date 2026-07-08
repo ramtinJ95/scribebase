@@ -270,6 +270,8 @@ def _extract_text_document(
     method: Literal["markdown", "text"] = input_type
     logger.info("Document: using %s extraction", method)
     raw_text = text_path.read_text(encoding="utf-8-sig")
+    if not raw_text.strip():
+        raise RuntimeError(f"Empty text document: {text_path}")
     md_path = paths["markdown"] / "page_0001.md"
     text = normalize_page_markdown(raw_text, 1)
     md_path.write_text(text)

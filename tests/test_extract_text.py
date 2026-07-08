@@ -1,5 +1,7 @@
 import logging
 
+import pytest
+
 from scribebase.config import AppConfig
 from scribebase.extraction import extract_source, read_page_metadata
 from scribebase.indexing import chunk_source
@@ -71,3 +73,25 @@ def test_extract_markdown_document_preserves_markdown(tmp_path) -> None:
     assert chunks[0].section == "Sync waves"
     assert "# Argo CD Notes" in chunks[0].text
     assert chunks[0].extraction_method == "markdown"
+
+
+def test_extract_empty_text_document_fails_before_page_marker(tmp_path) -> None:
+    text = tmp_path / "empty.txt"
+    text.write_text("\n\t  ", encoding="utf-8")
+    config = AppConfig(data_dir=tmp_path / ".study_local")
+
+    with pytest.raises(RuntimeError, match="Empty text document"):
+        extract_source(
+            text,
+            title="Empty Notes",
+            source_type="notes",
+            course=None,
+            chapter=None,
+            language="en",
+            ocr="auto",
+            config=config,
+            logger=logging.getLogger("test"),
+        )
+
+    sources = list((config.data_dir / "sources").glob("*/markdown/document.md"))
+    assert sources == []
