@@ -5,7 +5,8 @@ to a ScribeBase server running on the Mac mini.
 
 Templates:
 
-- `scribebase-ingest`: upload a local PDF or document and poll the ingestion job.
+- `scribebase-ingest`: upload a local PDF, image, Markdown, or text file and poll the ingestion job.
+- `scribebase-article-ingest`: submit article/text content as JSON and poll the ingestion job.
 - `scribebase-context`: retrieve cited search results or a context pack for the current task.
 
 Each template exists in two install layouts:
@@ -21,6 +22,7 @@ only. Do not configure these as automatically triggered skills.
 ```bash
 mkdir -p ~/.agents/skills
 cp -R docs/skills/agents/scribebase-ingest ~/.agents/skills/
+cp -R docs/skills/agents/scribebase-article-ingest ~/.agents/skills/
 cp -R docs/skills/agents/scribebase-context ~/.agents/skills/
 ```
 
@@ -29,6 +31,7 @@ cp -R docs/skills/agents/scribebase-context ~/.agents/skills/
 ```bash
 mkdir -p ~/.claude/skills
 cp -R docs/skills/claude/scribebase-ingest ~/.claude/skills/
+cp -R docs/skills/claude/scribebase-article-ingest ~/.claude/skills/
 cp -R docs/skills/claude/scribebase-context ~/.claude/skills/
 ```
 
@@ -47,6 +50,11 @@ Optional defaults:
 export SCRIBEBASE_DEFAULT_SOURCE_TYPE=paper
 export SCRIBEBASE_DEFAULT_LANGUAGE=en
 ```
+
+## Automation contract
+
+For company blog, Hacker News, newsletter/RSS, notes, snippets, and docs
+automation payloads, see [`../article-automation-contract.md`](../article-automation-contract.md).
 
 ## Smoke test
 
