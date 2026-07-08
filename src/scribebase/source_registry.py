@@ -6,7 +6,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .models import SourceManifest
+from .models import SourceManifest, normalize_tags
 from .paths import source_dir, source_subdirs
 
 
@@ -68,6 +68,18 @@ def create_manifest(
     course: str | None,
     chapter: str | None,
     language: str,
+    tags: list[str] | str | None = None,
+    origin: str | None = None,
+    publisher: str | None = None,
+    author: str | None = None,
+    created_at_source: datetime | str | None = None,
+    updated_at_source: datetime | str | None = None,
+    retrieved_at: datetime | str | None = None,
+    url: str | None = None,
+    canonical_url: str | None = None,
+    external_id: str | None = None,
+    collection: str | None = None,
+    summary: str | None = None,
 ) -> SourceManifest:
     now = datetime.now(timezone.utc)
     source_id = generate_source_id(title, now)
@@ -80,6 +92,18 @@ def create_manifest(
         course=course,
         chapter=chapter,
         language=language,  # type: ignore[arg-type]
+        tags=normalize_tags(tags),
+        origin=origin,
+        publisher=publisher,
+        author=author,
+        created_at_source=created_at_source,
+        updated_at_source=updated_at_source,
+        retrieved_at=retrieved_at,
+        url=url,
+        canonical_url=canonical_url,
+        external_id=external_id,
+        collection=collection,
+        summary=summary,
         original_path=str(original_path),
         data_dir=str(paths["root"]),
         created_at=now,

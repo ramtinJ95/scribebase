@@ -37,11 +37,13 @@ def test_run_ingest_job_marks_success_and_indexes(tmp_path, monkeypatch) -> None
         config,
         logger,
         cont,
+        **metadata,
     ):
         assert input_path.name == f"{job.job_id}_unsafe_name.pdf"
         assert title == "Uploaded PDF"
         assert source_type == "paper"
         assert language == "en"
+        assert metadata["tags"] == []
         now = datetime.now(timezone.utc)
         return SourceManifest(
             source_id="source-1",
@@ -97,3 +99,71 @@ def test_run_ingest_job_marks_failure(tmp_path, monkeypatch) -> None:
     saved = read_job(tmp_path, job.job_id)
     assert saved.status == "failed"
     assert saved.error == "boom"
+
+
+def test_run_ingest_job_passes_generic_metadata(tmp_path, monkeypatch) -> None:
+    config = default_config()
+    config.data_dir = tmp_path
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        BytesIO(b"note"),
+        "Uploaded Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        True,
+        False,
+        tags="kubernetes, notes",
+        origin="manual",
+        publisher="Personal",
+        author="Ramtin",
+        created_at_source="2026-07-08",
+        retrieved_at="2026-07-08T12:00:00Z",
+        url="https://example.com/note",
+        external_id="note-1",
+        collection="kubernetes-study",
+        summary="A note.",
+    )
+
+    def fake_extract(
+        input_path,
+        title,
+        source_type,
+        course,
+        chapter,
+        language,
+        ocr,
+        config,
+        logger,
+        cont,
+        **metadata,
+    ):
+        assert metadata["tags"] == ["kubernetes", "notes"]
+        assert metadata["origin"] == "manual"
+        assert metadata["publisher"] == "Personal"
+        assert metadata["created_at_source"].isoformat().startswith("2026-07-08")
+        assert metadata["url"] == "https://example.com/note"
+        assert metadata["external_id"] == "note-1"
+        assert metadata["collection"] == "kubernetes-study"
+        assert metadata["summary"] == "A note."
+        now = datetime.now(timezone.utc)
+        return SourceManifest(
+            source_id="source-1",
+            title=title,
+            source_type=source_type,
+            original_path=str(input_path),
+            data_dir=str(tmp_path / "sources" / "source-1"),
+            created_at=now,
+            updated_at=now,
+        )
+
+    monkeypatch.setattr("scribebase.server_jobs.extract_source", fake_extract)
+
+    run_ingest_job(job.job_id, config)
+
+    saved = read_job(tmp_path, job.job_id)
+    assert saved.status == "succeeded"
+    assert saved.tags == ["kubernetes", "notes"]

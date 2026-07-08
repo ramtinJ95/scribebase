@@ -125,7 +125,12 @@ uv run scribebase ingest ./scans/chapter_4_scanned.pdf \
 uv run scribebase ingest ./articles/gitops.md \
   --title "GitOps Notes" \
   --source-type article \
-  --language en
+  --language en \
+  --tags "kubernetes,gitops" \
+  --origin company_blog \
+  --publisher "Example Blog" \
+  --url "https://example.com/gitops" \
+  --collection "infra-reading"
 ```
 
 ```bash
@@ -137,6 +142,8 @@ uv run scribebase ingest ./notes/scheduling.txt \
 
 Markdown is preserved as Markdown. Plain text is copied into the normal Markdown
 extraction layout so it can be chunked, embedded, and searched like PDFs.
+Optional generic metadata can be passed with fields such as `--tags`, `--origin`,
+`--publisher`, `--author`, `--url`, `--external-id`, and `--collection`.
 
 ### Ingest images or handwritten notes
 
@@ -410,7 +417,12 @@ curl -s http://127.0.0.1:8765/ingest \
   -F "file=@./article.md" \
   -F "title=Article Title" \
   -F "source_type=article" \
-  -F "language=en"
+  -F "language=en" \
+  -F "tags=kubernetes,gitops" \
+  -F "origin=company_blog" \
+  -F "publisher=Example Blog" \
+  -F "url=https://example.com/gitops" \
+  -F "collection=infra-reading"
 ```
 
 The response includes a `job_id`. Poll it until `status` is `succeeded` or `failed`:

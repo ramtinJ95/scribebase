@@ -45,12 +45,42 @@ def extract_source(
     config: AppConfig,
     logger,
     continue_on_ocr_error: bool = False,
+    tags: list[str] | str | None = None,
+    origin: str | None = None,
+    publisher: str | None = None,
+    author: str | None = None,
+    created_at_source: datetime | str | None = None,
+    updated_at_source: datetime | str | None = None,
+    retrieved_at: datetime | str | None = None,
+    url: str | None = None,
+    canonical_url: str | None = None,
+    external_id: str | None = None,
+    collection: str | None = None,
+    summary: str | None = None,
 ) -> SourceManifest:
     input_path = input_path.expanduser().resolve()
     if not input_path.exists():
         raise FileNotFoundError(f"Input path does not exist: {input_path}")
     manifest = create_manifest(
-        config.data_dir, input_path, title, source_type, course, chapter, language
+        config.data_dir,
+        input_path,
+        title,
+        source_type,
+        course,
+        chapter,
+        language,
+        tags=tags,
+        origin=origin,
+        publisher=publisher,
+        author=author,
+        created_at_source=created_at_source,
+        updated_at_source=updated_at_source,
+        retrieved_at=retrieved_at,
+        url=url,
+        canonical_url=canonical_url,
+        external_id=external_id,
+        collection=collection,
+        summary=summary,
     )
     logger.info("Ingest source: %s (%s)", manifest.title, manifest.source_id)
     paths = source_subdirs(config.data_dir, manifest.source_id)

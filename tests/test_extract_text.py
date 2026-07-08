@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 
 import pytest
 
@@ -95,3 +96,44 @@ def test_extract_empty_text_document_fails_before_page_marker(tmp_path) -> None:
 
     sources = list((config.data_dir / "sources").glob("*/markdown/document.md"))
     assert sources == []
+
+
+def test_extract_text_document_persists_generic_metadata(tmp_path) -> None:
+    text = tmp_path / "snippet.txt"
+    text.write_text("A note about service meshes.", encoding="utf-8")
+    config = AppConfig(data_dir=tmp_path / ".study_local")
+
+    manifest = extract_source(
+        text,
+        title="Service Mesh Note",
+        source_type="snippet",
+        course=None,
+        chapter=None,
+        language="en",
+        ocr="auto",
+        config=config,
+        logger=logging.getLogger("test"),
+        tags="kubernetes, networking",
+        origin="manual",
+        publisher="Personal",
+        author="Ramtin",
+        created_at_source="2026-07-08",
+        updated_at_source=datetime(2026, 7, 9, tzinfo=timezone.utc),
+        retrieved_at="2026-07-10T12:00:00Z",
+        url="https://example.com/source",
+        canonical_url="https://example.com/source",
+        external_id="note-1",
+        collection="infra-reading",
+        summary="Service mesh note.",
+    )
+
+    assert manifest.tags == ["kubernetes", "networking"]
+    assert manifest.origin == "manual"
+    assert manifest.collection == "infra-reading"
+    assert manifest.created_at_source == datetime(2026, 7, 8)
+    chunks = chunk_source(manifest, config)
+    assert chunks[0].tags == ["kubernetes", "networking"]
+    assert chunks[0].origin == "manual"
+    assert chunks[0].publisher == "Personal"
+    assert chunks[0].external_id == "note-1"
+    assert chunks[0].collection == "infra-reading"

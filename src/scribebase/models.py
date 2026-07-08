@@ -7,8 +7,27 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-SourceType = Literal["book", "notes", "paper", "article", "other"]
+SourceType = Literal[
+    "book",
+    "notes",
+    "paper",
+    "article",
+    "transcript",
+    "documentation",
+    "snippet",
+    "other",
+]
 Language = Literal["en", "sv", "mixed", "unknown"]
+
+
+def normalize_tags(tags: list[str] | str | None) -> list[str]:
+    if tags is None:
+        return []
+    if isinstance(tags, str):
+        values = tags.split(",")
+    else:
+        values = [part for value in tags for part in value.split(",")]
+    return [value.strip() for value in values if value.strip()]
 
 
 class ExtractionSummary(BaseModel):
@@ -27,7 +46,22 @@ class EmbeddingSummary(BaseModel):
     weaviate_collection: str | None = None
 
 
-class SourceManifest(BaseModel):
+class GenericMetadata(BaseModel):
+    tags: list[str] = Field(default_factory=list)
+    origin: str | None = None
+    publisher: str | None = None
+    author: str | None = None
+    created_at_source: datetime | None = None
+    updated_at_source: datetime | None = None
+    retrieved_at: datetime | None = None
+    url: str | None = None
+    canonical_url: str | None = None
+    external_id: str | None = None
+    collection: str | None = None
+    summary: str | None = None
+
+
+class SourceManifest(GenericMetadata):
     schema_version: str = "1.0"
     source_id: str
     title: str
@@ -80,7 +114,7 @@ class TextQuality(BaseModel):
     flags: list[str] = Field(default_factory=list)
 
 
-class Chunk(BaseModel):
+class Chunk(GenericMetadata):
     chunk_id: str
     source_id: str
     source_type: str
