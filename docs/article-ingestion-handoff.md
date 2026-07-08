@@ -12,7 +12,7 @@ needs a different embedding model, retention policy, or access boundary.
 
 ## Current state
 
-ScribeBase currently has general source metadata:
+ScribeBase now has general source metadata:
 
 - `source_id`
 - `title`
@@ -23,14 +23,16 @@ ScribeBase currently has general source metadata:
 - `page_start` / `page_end`
 - `language`
 
-This is enough for books/PDFs, but weak for articles. We should not overload
-`course` and `chapter` long term for article concepts like publisher, URL,
-origin, or tags.
+ScribeBase also has generic metadata for articles, notes, snippets, docs, and
+automation-fed text sources. Do not overload `course` and `chapter` for article
+concepts like publisher, URL, origin, or tags.
 
-Current ingestion supports PDFs, images, and image directories. It does not yet
-support `.txt`, `.md`, or `.markdown` as first-class inputs. Add generic text
-and Markdown ingestion before the richer generic metadata work so the medium
-expansion is useful independently of the article schema.
+Current ingestion supports PDFs, images, image directories, `.txt`, `.md`, and
+`.markdown` files. The HTTP API also supports `POST /articles` for JSON article
+or text submissions from automations.
+
+For the current automation payload contract, see
+[`article-automation-contract.md`](article-automation-contract.md).
 
 ## Target generic metadata
 
@@ -235,6 +237,7 @@ Scope:
   - `external_id`
   - `collection`
   - `created_at_source_after` / `created_at_source_before`
+  - `updated_at_source_after` / `updated_at_source_before`
   - `retrieved_at_after` / `retrieved_at_before`
 - Update filter builder and search/context API models.
 - Add tests for filter construction and API request parsing.

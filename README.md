@@ -1,8 +1,8 @@
 # ScribeBase
 
-ScribeBase is a local-first CLI for turning documents into cited Markdown and searchable RAG context.
+ScribeBase is a local-first knowledge node for turning documents, notes, and web articles into cited Markdown and searchable RAG context.
 
-It can ingest PDFs, scanned pages, images, and handwritten notes; extract or OCR them into page-level Markdown; chunk and embed the text locally; index it in Weaviate; and retrieve grounded context for search, answers, and quizzes.
+It can ingest PDFs, scanned pages, images, handwritten notes, Markdown, plain text, and automation-submitted articles; extract or OCR them into Markdown; chunk and embed the text locally; index it in Weaviate; and retrieve grounded context for search, answers, and quizzes.
 
 Local-first means extraction, OCR, embeddings, indexing, and retrieval run on your machine. Using an LLM for final answers is optional.
 
@@ -10,7 +10,10 @@ Local-first means extraction, OCR, embeddings, indexing, and retrieval run on yo
 
 - Extracts true-text PDFs with PyMuPDF/PyMuPDF4LLM.
 - OCRs scanned PDFs and images with local providers.
+- Ingests Markdown and plain-text sources without OCR.
+- Accepts article/text JSON submissions over HTTP for external automations.
 - Stores originals, rendered pages, Markdown, manifests, page metadata, and chunks under a local data directory.
+- Preserves generic metadata such as URL, origin, publisher, author, tags, collection, and source dates.
 - Creates embeddings through a local llama.cpp-compatible `/v1/embeddings` server.
 - Indexes chunks into local Weaviate using self-provided vectors.
 - Searches with hybrid retrieval and metadata filters.
@@ -477,6 +480,10 @@ curl -s http://127.0.0.1:8765/articles \
 `POST /articles` defaults `source_type` to `article`. The `body` may include
 Markdown frontmatter; explicit JSON fields override frontmatter values.
 
+For reusable automation payload templates for company blogs, Hacker News,
+newsletters/RSS, notes, snippets, and docs, see
+[`docs/article-automation-contract.md`](docs/article-automation-contract.md).
+
 The response includes a `job_id`. Poll it until `status` is `succeeded` or `failed`:
 
 ```bash
@@ -487,8 +494,9 @@ curl -s http://127.0.0.1:8765/jobs/JOB_ID \
 For a full Mac mini deployment with launchd examples, see
 [`docs/macmini-deployment.md`](docs/macmini-deployment.md).
 
-For agent skill templates that upload documents and retrieve context from a
-remote ScribeBase server, see [`docs/skills/`](docs/skills/).
+For user-invoked agent skill templates that upload documents, submit article
+JSON, and retrieve context from a remote ScribeBase server, see
+[`docs/skills/`](docs/skills/).
 
 ## Command reference
 
