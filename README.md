@@ -344,7 +344,7 @@ Run `scribebase init` to create `.study_local/config.yaml`. Important sections:
 ```yaml
 weaviate:
   url: "http://localhost:8081"
-  collection: "StudyChunk"
+  collection: "Chunk"
   vector_name: "text_vector"
 
 embedding:

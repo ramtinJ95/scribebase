@@ -316,7 +316,7 @@ Example:
     "embedding_dimension": 1024,
     "embedding_base_url": "http://localhost:8080/v1",
     "indexed_in_weaviate": true,
-    "weaviate_collection": "StudyChunk"
+    "weaviate_collection": "Chunk"
   }
 }
 ```
@@ -622,7 +622,7 @@ Default behavior should reject mismatches.
 Collection name:
 
 ```text
-StudyChunk
+Chunk
 ```
 
 Use self-provided vectors. Prefer named vector:
@@ -957,7 +957,7 @@ The app config should default to:
 ```yaml
 weaviate:
   url: "http://localhost:8081"
-  collection: "StudyChunk"
+  collection: "Chunk"
 ```
 
 ## 21. Example llama.cpp embedding server docs
@@ -1001,7 +1001,7 @@ data_dir: ".study_local"
 
 weaviate:
   url: "http://localhost:8081"
-  collection: "StudyChunk"
+  collection: "Chunk"
   vector_name: "text_vector"
 
 embedding:
@@ -1083,7 +1083,7 @@ Minimum:
 [INFO] Page 2: OCR with shell provider
 [INFO] Created 42 chunks
 [INFO] Embedding batch 1/3
-[INFO] Indexed 42 chunks into Weaviate collection StudyChunk
+[INFO] Indexed 42 chunks into Weaviate collection Chunk
 ```
 
 Write logs to:

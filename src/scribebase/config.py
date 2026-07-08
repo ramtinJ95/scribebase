@@ -18,7 +18,7 @@ API_TOKEN_ENV = "SCRIBEBASE_API_TOKEN"
 
 class WeaviateConfig(BaseModel):
     url: str = "http://localhost:8081"
-    collection: str = "StudyChunk"
+    collection: str = "Chunk"
     vector_name: str = "text_vector"
 
 
