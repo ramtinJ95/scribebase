@@ -145,7 +145,7 @@ def _units(text: str) -> list[tuple[str, int | None, str | None, str | None]]:
     content_index = 0
     for part in parts:
         if not part.strip():
-            if buffer.strip():
+            if buffer.strip() and not _is_page_prologue(buffer):
                 units.append((buffer.strip(), page, section, chapter))
                 buffer = ""
             continue
@@ -182,6 +182,10 @@ def _has_substantive_text(text: str) -> bool:
     text = PAGE_MARKER_RE.sub("", text)
     text = re.sub(r"^\s*##\s+Page\s+\d+\s*$", "", text, flags=re.MULTILINE | re.IGNORECASE)
     return bool(text.strip())
+
+
+def _is_page_prologue(text: str) -> bool:
+    return not _has_substantive_text(text)
 
 
 def _chapter_from_heading(clean_heading: str, level: int) -> str | None:

@@ -67,6 +67,27 @@ def test_chunker_infers_explicit_chapters(tmp_path) -> None:
     assert "CHAPTER 2 Scheduling" in chapters
 
 
+def test_chunker_keeps_new_page_marker_with_new_chapter(tmp_path) -> None:
+    md = tmp_path / "document.md"
+    md.write_text(
+        "<!-- page: 1 -->\n\n## Page 1\n\n# CHAPTER 1 Introduction\n\n"
+        + "Alpha text. " * 25
+        + "\n\n<!-- page: 2 -->\n\n## Page 2\n\n# CHAPTER 2 Scheduling\n\n"
+        + "Beta text. " * 25
+    )
+    manifest = _manifest(tmp_path, chapter=None)
+    chunks = chunk_markdown(md, manifest, _pages(), ChunkingConfig(target_chars=2000, min_chars=50))
+
+    chapter_1_chunks = [chunk for chunk in chunks if chunk.chapter == "CHAPTER 1 Introduction"]
+    chapter_2_chunks = [chunk for chunk in chunks if chunk.chapter == "CHAPTER 2 Scheduling"]
+    assert chapter_1_chunks
+    assert chapter_2_chunks
+    assert {chunk.page_end for chunk in chapter_1_chunks} == {1}
+    assert all("<!-- page: 2 -->" not in chunk.text for chunk in chapter_1_chunks)
+    assert chapter_2_chunks[0].page_start == 2
+    assert "<!-- page: 2 -->" in chapter_2_chunks[0].text
+
+
 def test_chunker_infers_untitled_chapter_from_this_chapter_covers(tmp_path) -> None:
     md = tmp_path / "document.md"
     md.write_text(
