@@ -243,6 +243,109 @@ def test_ingest_upload_without_title_or_frontmatter_returns_400(tmp_path, monkey
     assert list((tmp_path / "jobs").iterdir()) == []
 
 
+def test_article_ingest_json_creates_markdown_job(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    started: list[str] = []
+    monkeypatch.setattr(
+        "scribebase.server.run_ingest_job",
+        lambda job_id, config: started.append(job_id),
+    )
+
+    response = client.post(
+        "/articles",
+        headers=_auth(),
+        json={
+            "title": "GitOps Article",
+            "body": "# GitOps\n\nArgo CD reconciles declared state.",
+            "language": "en",
+            "tags": ["kubernetes", "gitops"],
+            "origin": "company_blog",
+            "publisher": "Example Blog",
+            "author": "Author",
+            "created_at_source": "2026-07-08T00:00:00Z",
+            "url": "https://example.com/gitops",
+            "external_id": "article-1",
+            "collection": "infra-reading",
+            "summary": "GitOps article.",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "queued"
+    assert body["title"] == "GitOps Article"
+    assert body["filename"] == "gitops_article.md"
+    assert body["source_type"] == "article"
+    assert body["language"] == "en"
+    assert body["tags"] == ["kubernetes", "gitops"]
+    assert body["origin"] == "company_blog"
+    assert body["publisher"] == "Example Blog"
+    assert body["collection"] == "infra-reading"
+    assert started == [body["job_id"]]
+    assert (tmp_path / "uploads" / f"{body['job_id']}_gitops_article.md").read_text() == (
+        "# GitOps\n\nArgo CD reconciles declared state."
+    )
+
+
+def test_article_ingest_json_uses_markdown_frontmatter_defaults(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr("scribebase.server.run_ingest_job", lambda *_: None)
+
+    response = client.post(
+        "/articles",
+        headers=_auth(),
+        json={
+            "body": "---\n"
+            "title: Frontmatter Article\n"
+            "language: en\n"
+            "tags: [kubernetes, gitops]\n"
+            "origin: company_blog\n"
+            "collection: infra-reading\n"
+            "---\n\n"
+            "# Body\n",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "Frontmatter Article"
+    assert body["source_type"] == "article"
+    assert body["language"] == "en"
+    assert body["tags"] == ["kubernetes", "gitops"]
+    assert body["origin"] == "company_blog"
+    assert body["collection"] == "infra-reading"
+
+
+def test_article_ingest_json_rejects_empty_body(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/articles",
+        headers=_auth(),
+        json={"title": "Empty", "body": "\n\t  "},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "body must not be empty"
+    assert list((tmp_path / "uploads").iterdir()) == []
+    assert list((tmp_path / "jobs").iterdir()) == []
+
+
+def test_article_ingest_json_without_title_or_frontmatter_returns_400(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/articles",
+        headers=_auth(),
+        json={"body": "# Untitled\n\nBody."},
+    )
+
+    assert response.status_code == 400
+    assert "title is required" in response.json()["detail"]
+    assert list((tmp_path / "uploads").iterdir()) == []
+    assert list((tmp_path / "jobs").iterdir()) == []
+
+
 def test_job_status_returns_persisted_job(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
     monkeypatch.setattr("scribebase.server.run_ingest_job", lambda *_: None)

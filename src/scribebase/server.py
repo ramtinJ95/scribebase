@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from io import BytesIO
 from datetime import datetime
 from typing import Annotated
 
@@ -10,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from scribebase.config import AppConfig, load_config, read_api_token
 from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
-from scribebase.models import Language, SearchFilters, SearchResult, SourceManifest, SourceType
+from scribebase.models import GenericMetadata, Language, SearchFilters, SearchResult, SourceManifest, SourceType
 from scribebase.paths import ensure_data_layout
 from scribebase.retrieval.context_pack import build_context_pack
 from scribebase.retrieval.search import search_chunks
@@ -21,7 +22,7 @@ from scribebase.server_jobs import (
     read_job,
     run_ingest_job,
 )
-from scribebase.source_registry import list_manifests
+from scribebase.source_registry import list_manifests, slugify
 from scribebase.vectorstores.weaviate_store import WeaviateStore
 
 
@@ -61,6 +62,16 @@ class ContextResponse(BaseModel):
     task: str
     context_pack: str
     results: list[SearchResult]
+
+
+class ArticleIngestRequest(GenericMetadata):
+    body: str = Field(min_length=1)
+    title: str | None = None
+    source_type: SourceType = "article"
+    course: str | None = None
+    chapter: str | None = None
+    language: Language | None = None
+    no_index: bool = False
 
 
 _bearer = HTTPBearer(auto_error=False)
@@ -182,6 +193,45 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
                 external_id=external_id,
                 collection=collection,
                 summary=summary,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        background_tasks.add_task(run_ingest_job, job.job_id, config)
+        return public_job(job)
+
+    @app.post("/articles", response_model=IngestJobResponse, dependencies=[Depends(require_auth)])
+    def ingest_article(
+        request: ArticleIngestRequest,
+        background_tasks: BackgroundTasks,
+    ) -> IngestJobResponse:
+        if not request.body.strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="body must not be empty")
+        filename = f"{slugify(request.title or 'article')[:80]}.md"
+        try:
+            job = create_ingest_job(
+                config,
+                filename,
+                BytesIO(request.body.encode("utf-8")),
+                request.title,
+                request.source_type,
+                request.course,
+                request.chapter,
+                request.language,
+                "auto",
+                request.no_index,
+                False,
+                tags=request.tags if "tags" in request.model_fields_set else None,
+                origin=request.origin,
+                publisher=request.publisher,
+                author=request.author,
+                created_at_source=request.created_at_source,
+                updated_at_source=request.updated_at_source,
+                retrieved_at=request.retrieved_at,
+                url=request.url,
+                canonical_url=request.canonical_url,
+                external_id=request.external_id,
+                collection=request.collection,
+                summary=request.summary,
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
