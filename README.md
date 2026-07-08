@@ -144,6 +144,25 @@ Markdown is preserved as Markdown. Plain text is copied into the normal Markdown
 extraction layout so it can be chunked, embedded, and searched like PDFs.
 Optional generic metadata can be passed with fields such as `--tags`, `--origin`,
 `--publisher`, `--author`, `--url`, `--external-id`, and `--collection`.
+Markdown files can also provide those fields as YAML frontmatter; explicit CLI
+or API fields override frontmatter values.
+
+```markdown
+---
+title: "GitOps Notes"
+source_type: article
+language: en
+tags: ["kubernetes", "gitops"]
+origin: company_blog
+publisher: "Example Blog"
+url: "https://example.com/gitops"
+collection: "infra-reading"
+---
+
+# GitOps Notes
+
+Article body...
+```
 
 ### Ingest images or handwritten notes
 

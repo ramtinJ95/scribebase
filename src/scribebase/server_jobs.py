@@ -4,17 +4,26 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import BinaryIO, Literal
+from typing import BinaryIO, Literal, TypeVar
 from uuid import uuid4
 
 from scribebase.config import AppConfig
 from scribebase.extraction import extract_source
 from scribebase.indexing import index_source
 from scribebase.logging_utils import setup_logging
-from scribebase.models import GenericMetadata, Language, SourceType, normalize_tags
+from scribebase.markdown.frontmatter import read_markdown_with_frontmatter
+from scribebase.models import (
+    GenericMetadata,
+    Language,
+    SourceMetadataInput,
+    SourceType,
+    normalize_tags,
+)
 from scribebase.paths import ensure_data_layout
 
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
+MARKDOWN_EXTS = {".md", ".markdown"}
+T = TypeVar("T")
 
 
 class IngestJob(GenericMetadata):
@@ -66,11 +75,11 @@ def create_ingest_job(
     config: AppConfig,
     filename: str,
     fileobj: BinaryIO,
-    title: str,
-    source_type: SourceType,
+    title: str | None,
+    source_type: SourceType | None,
     course: str | None,
     chapter: str | None,
-    language: Language,
+    language: Language | None,
     ocr: str,
     no_index: bool,
     continue_on_ocr_error: bool,
@@ -95,37 +104,50 @@ def create_ingest_job(
     with upload_path.open("wb") as out:
         shutil.copyfileobj(fileobj, out)
 
-    now = _now()
-    job = IngestJob(
-        job_id=job_id,
-        status="queued",
-        filename=safe_name,
-        upload_path=str(upload_path),
-        title=title,
-        source_type=source_type,
-        course=course,
-        chapter=chapter,
-        language=language,
-        tags=normalize_tags(tags),
-        origin=origin,
-        publisher=publisher,
-        author=author,
-        created_at_source=created_at_source,
-        updated_at_source=updated_at_source,
-        retrieved_at=retrieved_at,
-        url=url,
-        canonical_url=canonical_url,
-        external_id=external_id,
-        collection=collection,
-        summary=summary,
-        ocr=ocr,
-        no_index=no_index,
-        continue_on_ocr_error=continue_on_ocr_error,
-        created_at=now,
-        updated_at=now,
-    )
-    write_job(config.data_dir, job)
-    return job
+    try:
+        frontmatter = _frontmatter_metadata(upload_path)
+        title = _resolve_field(title, frontmatter.title)
+        if not title:
+            raise ValueError("title is required unless provided by Markdown frontmatter")
+        source_type = _resolve_field(source_type, frontmatter.source_type) or "other"
+        course = _resolve_field(course, frontmatter.course)
+        chapter = _resolve_field(chapter, frontmatter.chapter)
+        language = _resolve_field(language, frontmatter.language) or "unknown"
+
+        now = _now()
+        job = IngestJob(
+            job_id=job_id,
+            status="queued",
+            filename=safe_name,
+            upload_path=str(upload_path),
+            title=title,
+            source_type=source_type,
+            course=course,
+            chapter=chapter,
+            language=language,
+            tags=normalize_tags(tags) if tags is not None else frontmatter.tags,
+            origin=_resolve_field(origin, frontmatter.origin),
+            publisher=_resolve_field(publisher, frontmatter.publisher),
+            author=_resolve_field(author, frontmatter.author),
+            created_at_source=_resolve_field(created_at_source, frontmatter.created_at_source),
+            updated_at_source=_resolve_field(updated_at_source, frontmatter.updated_at_source),
+            retrieved_at=_resolve_field(retrieved_at, frontmatter.retrieved_at),
+            url=_resolve_field(url, frontmatter.url),
+            canonical_url=_resolve_field(canonical_url, frontmatter.canonical_url),
+            external_id=_resolve_field(external_id, frontmatter.external_id),
+            collection=_resolve_field(collection, frontmatter.collection),
+            summary=_resolve_field(summary, frontmatter.summary),
+            ocr=ocr,
+            no_index=no_index,
+            continue_on_ocr_error=continue_on_ocr_error,
+            created_at=now,
+            updated_at=now,
+        )
+        write_job(config.data_dir, job)
+        return job
+    except Exception:
+        upload_path.unlink(missing_ok=True)
+        raise
 
 
 def run_ingest_job(job_id: str, config: AppConfig) -> None:
@@ -182,6 +204,17 @@ def read_job(data_dir: Path, job_id: str) -> IngestJob:
     if not path.exists():
         raise FileNotFoundError(f"Job not found: {job_id}")
     return IngestJob.model_validate_json(path.read_text())
+
+
+def _frontmatter_metadata(path: Path) -> SourceMetadataInput:
+    if path.suffix.lower() not in MARKDOWN_EXTS:
+        return SourceMetadataInput()
+    metadata, _ = read_markdown_with_frontmatter(path)
+    return metadata
+
+
+def _resolve_field(explicit: T | None, default: T | None) -> T | None:
+    return explicit if explicit is not None else default
 
 
 def write_job(data_dir: Path, job: IngestJob) -> Path:
