@@ -5,6 +5,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from scribebase.config import AppConfig
 from scribebase.extractors.image_renderer import render_pdf_page
@@ -22,6 +23,8 @@ from scribebase.pdf_router import evaluate_text_quality
 from scribebase.source_registry import create_manifest, write_manifest
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"}
+MARKDOWN_EXTS = {".md", ".markdown"}
+TEXT_EXTS = {".txt"}
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,10 @@ def extract_source(
         pages = _extract_pdf(original, manifest, ocr, config, logger, continue_on_ocr_error)
     elif original.suffix.lower() in IMAGE_EXTS:
         pages = _extract_images(original, manifest, ocr, config, logger, continue_on_ocr_error)
+    elif original.suffix.lower() in MARKDOWN_EXTS:
+        pages = _extract_text_document(original, manifest, config, logger, input_type="markdown")
+    elif original.suffix.lower() in TEXT_EXTS:
+        pages = _extract_text_document(original, manifest, config, logger, input_type="text")
     else:
         raise ValueError(f"Unsupported input type: {original}")
 
@@ -250,6 +257,39 @@ def _extract_images(
         _write_page_metadata(paths["metadata"], meta)
         pages.append(meta)
     return pages
+
+
+def _extract_text_document(
+    text_path: Path,
+    manifest: SourceManifest,
+    config: AppConfig,
+    logger,
+    input_type: Literal["markdown", "text"],
+) -> list[PageMetadata]:
+    paths = source_subdirs(config.data_dir, manifest.source_id)
+    method: Literal["markdown", "text"] = input_type
+    logger.info("Document: using %s extraction", method)
+    raw_text = text_path.read_text(encoding="utf-8-sig")
+    if not raw_text.strip():
+        raise RuntimeError(f"Empty text document: {text_path}")
+    md_path = paths["markdown"] / "page_0001.md"
+    text = normalize_page_markdown(raw_text, 1)
+    md_path.write_text(text)
+    meta = PageMetadata(
+        source_id=manifest.source_id,
+        page_number=1,
+        page_index=0,
+        input_type=input_type,
+        text_layer_detected=True,
+        extraction_method=method,
+        image_path=None,
+        markdown_path=str(md_path),
+        char_count=len(text.strip()),
+        word_count=len(text.split()),
+        quality_flags=[],
+    )
+    _write_page_metadata(paths["metadata"], meta)
+    return [meta]
 
 
 def _run_ocr_page(

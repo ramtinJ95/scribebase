@@ -47,9 +47,9 @@ class PageMetadata(BaseModel):
     source_id: str
     page_number: int
     page_index: int
-    input_type: Literal["pdf_page", "image"]
+    input_type: Literal["pdf_page", "image", "markdown", "text"]
     text_layer_detected: bool
-    extraction_method: Literal["pymupdf4llm", "pymupdf", "ocr", "failed"]
+    extraction_method: Literal["pymupdf4llm", "pymupdf", "ocr", "markdown", "text", "failed"]
     ocr_provider: str | None = None
     ocr_model: str | None = None
     image_path: str | None = None

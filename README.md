@@ -71,7 +71,7 @@ export SCRIBEBASE_API_TOKEN=change-me
 uv run scribebase serve --host 0.0.0.0 --port 8765
 ```
 
-Ingest a PDF:
+Ingest a PDF, Markdown file, or text file:
 
 ```bash
 uv run scribebase ingest ./books/example.pdf \
@@ -118,6 +118,25 @@ uv run scribebase ingest ./scans/chapter_4_scanned.pdf \
 ```
 
 `--ocr auto` uses OCR only for pages that do not have a usable text layer.
+
+### Ingest Markdown or plain text
+
+```bash
+uv run scribebase ingest ./articles/gitops.md \
+  --title "GitOps Notes" \
+  --source-type article \
+  --language en
+```
+
+```bash
+uv run scribebase ingest ./notes/scheduling.txt \
+  --title "Kubernetes Scheduling Notes" \
+  --source-type notes \
+  --language en
+```
+
+Markdown is preserved as Markdown. Plain text is copied into the normal Markdown
+extraction layout so it can be chunked, embedded, and searched like PDFs.
 
 ### Ingest images or handwritten notes
 
@@ -175,6 +194,9 @@ For PDFs:
 3. If the text layer is missing or poor, it renders the page to an image and sends it to the configured OCR provider.
 
 For image files and image directories, ScribeBase goes directly to OCR.
+
+For Markdown and plain-text files, ScribeBase reads the document directly; OCR
+is not used.
 
 ### OCR options
 
@@ -377,6 +399,17 @@ curl -s http://127.0.0.1:8765/ingest \
   -F "file=@./paper.pdf" \
   -F "title=Paper Title" \
   -F "source_type=paper" \
+  -F "language=en"
+```
+
+Markdown and text uploads use the same endpoint:
+
+```bash
+curl -s http://127.0.0.1:8765/ingest \
+  -H "Authorization: Bearer $SCRIBEBASE_API_TOKEN" \
+  -F "file=@./article.md" \
+  -F "title=Article Title" \
+  -F "source_type=article" \
   -F "language=en"
 ```
 

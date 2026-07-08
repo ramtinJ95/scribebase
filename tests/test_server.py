@@ -150,6 +150,30 @@ def test_ingest_upload_creates_job(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "uploads" / f"{body['job_id']}_paper.pdf").read_bytes() == b"%PDF-1.7 test"
 
 
+def test_ingest_upload_accepts_text_file(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    started: list[str] = []
+    monkeypatch.setattr(
+        "scribebase.server.run_ingest_job",
+        lambda job_id, config: started.append(job_id),
+    )
+
+    response = client.post(
+        "/ingest",
+        headers=_auth(),
+        data={"title": "Uploaded Notes", "source_type": "notes", "language": "en"},
+        files={"file": ("notes.txt", b"plain text notes", "text/plain")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "queued"
+    assert body["title"] == "Uploaded Notes"
+    assert body["source_type"] == "notes"
+    assert started == [body["job_id"]]
+    assert (tmp_path / "uploads" / f"{body['job_id']}_notes.txt").read_bytes() == b"plain text notes"
+
+
 def test_job_status_returns_persisted_job(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
     monkeypatch.setattr("scribebase.server.run_ingest_job", lambda *_: None)
