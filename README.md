@@ -404,6 +404,7 @@ Endpoints:
 - `GET /health`: readiness summary for ScribeBase, Weaviate, and embeddings.
 - `GET /sources`: list indexed source manifests.
 - `POST /ingest`: upload a document and enqueue extraction/indexing.
+- `POST /articles`: submit Markdown/text article content as JSON and enqueue ingestion.
 - `GET /jobs/{job_id}`: inspect ingestion job status and errors.
 - `POST /search`: hybrid search over chunks.
 - `POST /context`: search and return a ready-to-paste context pack.
@@ -454,6 +455,27 @@ curl -s http://127.0.0.1:8765/ingest \
   -F "url=https://example.com/gitops" \
   -F "collection=infra-reading"
 ```
+
+Automations can avoid multipart upload by using the article JSON endpoint:
+
+```bash
+curl -s http://127.0.0.1:8765/articles \
+  -H "Authorization: Bearer $SCRIBEBASE_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Article Title",
+    "body": "# Article Title\n\nArticle body...",
+    "language": "en",
+    "tags": ["kubernetes", "gitops"],
+    "origin": "company_blog",
+    "publisher": "Example Blog",
+    "url": "https://example.com/gitops",
+    "collection": "infra-reading"
+  }'
+```
+
+`POST /articles` defaults `source_type` to `article`. The `body` may include
+Markdown frontmatter; explicit JSON fields override frontmatter values.
 
 The response includes a `job_id`. Poll it until `status` is `succeeded` or `failed`:
 
