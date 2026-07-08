@@ -124,7 +124,7 @@ def test_run_ingest_job_passes_generic_metadata(tmp_path, monkeypatch) -> None:
         retrieved_at="2026-07-08T12:00:00Z",
         url="https://example.com/note",
         external_id="note-1",
-        collection="kubernetes-study",
+        collection="kubernetes-reading",
         summary="A note.",
     )
 
@@ -147,7 +147,7 @@ def test_run_ingest_job_passes_generic_metadata(tmp_path, monkeypatch) -> None:
         assert metadata["created_at_source"].isoformat().startswith("2026-07-08")
         assert metadata["url"] == "https://example.com/note"
         assert metadata["external_id"] == "note-1"
-        assert metadata["collection"] == "kubernetes-study"
+        assert metadata["collection"] == "kubernetes-reading"
         assert metadata["summary"] == "A note."
         now = datetime.now(timezone.utc)
         return SourceManifest(

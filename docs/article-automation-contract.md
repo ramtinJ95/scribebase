@@ -33,7 +33,7 @@ Recommended:
 - `retrieved_at`: time your automation fetched/saved the item.
 - `tags`: topical labels.
 - `external_id`: upstream ID such as HN item ID, RSS GUID, or automation ID.
-- `collection`: user grouping such as `infra-reading`, `kubernetes-study`, or
+- `collection`: user grouping such as `infra-reading`, `kubernetes-reading`, or
   `company-research`.
 - `summary`: short source-level summary when available.
 
@@ -166,7 +166,7 @@ use `POST /articles` and set `source_type` explicitly.
   "origin": "manual",
   "language": "en",
   "tags": ["kubernetes", "scheduling"],
-  "collection": "kubernetes-study"
+  "collection": "kubernetes-reading"
 }
 ```
 

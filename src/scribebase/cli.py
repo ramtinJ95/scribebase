@@ -65,7 +65,7 @@ def _logger(config: AppConfig):
 
 
 @app.command()
-def init(data_dir: Path = typer.Option(Path(".study_local"), help="Local data directory.")) -> None:
+def init(data_dir: Path = typer.Option(Path(".scribebase"), help="Local data directory.")) -> None:
     ensure_data_layout(data_dir)
     path = write_default_config(data_dir)
     typer.echo(f"Created data layout under {data_dir}")

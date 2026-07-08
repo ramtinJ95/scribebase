@@ -1,4 +1,4 @@
-# PRD: Local OCR → Markdown → Weaviate RAG Study App v1
+# PRD: Local OCR → Markdown → Weaviate RAG Knowledge Node v1
 
 ## 0. Product summary
 
@@ -252,7 +252,7 @@ ocr:
 Default data directory:
 
 ```text
-.study_local/
+.scribebase/
   config.yaml
   sources/
     <source_id>/
@@ -301,7 +301,7 @@ Example:
   "course": null,
   "language": "en",
   "original_path": "/absolute/or/copied/path/source.pdf",
-  "data_dir": ".study_local/sources/cognitive_psychology_2026_abc123",
+  "data_dir": ".scribebase/sources/cognitive_psychology_2026_abc123",
   "created_at": "2026-07-07T12:00:00+02:00",
   "updated_at": "2026-07-07T12:00:00+02:00",
   "extraction_summary": {
@@ -316,7 +316,7 @@ Example:
     "embedding_dimension": 1024,
     "embedding_base_url": "http://localhost:8080/v1",
     "indexed_in_weaviate": true,
-    "weaviate_collection": "StudyChunk"
+    "weaviate_collection": "Chunk"
   }
 }
 ```
@@ -337,8 +337,8 @@ Example:
   "extraction_method": "pymupdf4llm",
   "ocr_provider": null,
   "ocr_model": null,
-  "image_path": ".study_local/sources/.../pages/page_0087.png",
-  "markdown_path": ".study_local/sources/.../markdown/page_0087.md",
+  "image_path": ".scribebase/sources/.../pages/page_0087.png",
+  "markdown_path": ".scribebase/sources/.../markdown/page_0087.md",
   "char_count": 2422,
   "word_count": 387,
   "quality_flags": []
@@ -357,8 +357,8 @@ For OCR pages:
   "extraction_method": "ocr",
   "ocr_provider": "shell",
   "ocr_model": "Chandra OCR 2",
-  "image_path": ".study_local/sources/.../pages/page_0003.png",
-  "markdown_path": ".study_local/sources/.../markdown/page_0003.md",
+  "image_path": ".scribebase/sources/.../pages/page_0003.png",
+  "markdown_path": ".scribebase/sources/.../markdown/page_0003.md",
   "char_count": 1040,
   "word_count": 168,
   "quality_flags": ["handwriting", "ocr_uncertain"]
@@ -384,7 +384,7 @@ Example JSONL row:
   "page_end": 88,
   "chunk_index": 3,
   "text": "Working memory is commonly described as...",
-  "file_path": ".study_local/sources/.../markdown/chapters/chapter_04.md",
+  "file_path": ".scribebase/sources/.../markdown/chapters/chapter_04.md",
   "extraction_method": "pymupdf4llm",
   "ocr_model": null,
   "language": "en",
@@ -622,7 +622,7 @@ Default behavior should reject mismatches.
 Collection name:
 
 ```text
-StudyChunk
+Chunk
 ```
 
 Use self-provided vectors. Prefer named vector:
@@ -743,7 +743,7 @@ Chunk ID: cognitive_psychology_2026_abc123_ch04_p087_0003
 Save to:
 
 ```text
-.study_local/outputs/context_packs/<timestamp>_<slug>.md
+.scribebase/outputs/context_packs/<timestamp>_<slug>.md
 ```
 
 ## 18. LLM integration
@@ -809,7 +809,7 @@ Use Typer.
 Creates config and directory structure.
 
 ```bash
-scribebase init --data-dir .study_local
+scribebase init --data-dir .scribebase
 ```
 
 ### `scribebase doctor`
@@ -957,7 +957,7 @@ The app config should default to:
 ```yaml
 weaviate:
   url: "http://localhost:8081"
-  collection: "StudyChunk"
+  collection: "Chunk"
 ```
 
 ## 21. Example llama.cpp embedding server docs
@@ -991,17 +991,17 @@ should verify:
 Default config path:
 
 ```text
-.study_local/config.yaml
+.scribebase/config.yaml
 ```
 
 Example:
 
 ```yaml
-data_dir: ".study_local"
+data_dir: ".scribebase"
 
 weaviate:
   url: "http://localhost:8081"
-  collection: "StudyChunk"
+  collection: "Chunk"
   vector_name: "text_vector"
 
 embedding:
@@ -1083,13 +1083,13 @@ Minimum:
 [INFO] Page 2: OCR with shell provider
 [INFO] Created 42 chunks
 [INFO] Embedding batch 1/3
-[INFO] Indexed 42 chunks into Weaviate collection StudyChunk
+[INFO] Indexed 42 chunks into Weaviate collection Chunk
 ```
 
 Write logs to:
 
 ```text
-.study_local/logs/app.log
+.scribebase/logs/app.log
 ```
 
 ## 25. Tests
@@ -1238,7 +1238,7 @@ Do not implement these in v1 unless trivial:
 3. Direct model-specific adapters for GLM-OCR, PaddleOCR-VL, Chandra, Surya, DeepSeek-OCR-2.
 4. Chapter/TOC detection using LLM or document layout signals.
 5. Handwriting correction pass.
-6. Study session tracking.
+6. Learning session tracking.
 7. Spaced repetition export to Anki.
 8. Multi-source comparison mode.
 9. Automatic benchmark harness for OCR models.

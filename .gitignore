@@ -15,7 +15,7 @@ htmlcov/
 .venv/
 venv/
 
-.study_local/
+.scribebase/
 models/
 dist/
 build/
