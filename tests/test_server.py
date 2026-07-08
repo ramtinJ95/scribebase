@@ -229,6 +229,8 @@ def test_ingest_upload_without_title_or_frontmatter_returns_400(tmp_path, monkey
 
     assert response.status_code == 400
     assert "title is required" in response.json()["detail"]
+    assert list((tmp_path / "uploads").iterdir()) == []
+    assert list((tmp_path / "jobs").iterdir()) == []
 
 
 def test_job_status_returns_persisted_job(tmp_path, monkeypatch) -> None:

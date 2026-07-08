@@ -104,46 +104,50 @@ def create_ingest_job(
     with upload_path.open("wb") as out:
         shutil.copyfileobj(fileobj, out)
 
-    frontmatter = _frontmatter_metadata(upload_path)
-    title = _resolve_field(title, frontmatter.title)
-    if not title:
-        raise ValueError("title is required unless provided by Markdown frontmatter")
-    source_type = _resolve_field(source_type, frontmatter.source_type) or "other"
-    course = _resolve_field(course, frontmatter.course)
-    chapter = _resolve_field(chapter, frontmatter.chapter)
-    language = _resolve_field(language, frontmatter.language) or "unknown"
+    try:
+        frontmatter = _frontmatter_metadata(upload_path)
+        title = _resolve_field(title, frontmatter.title)
+        if not title:
+            raise ValueError("title is required unless provided by Markdown frontmatter")
+        source_type = _resolve_field(source_type, frontmatter.source_type) or "other"
+        course = _resolve_field(course, frontmatter.course)
+        chapter = _resolve_field(chapter, frontmatter.chapter)
+        language = _resolve_field(language, frontmatter.language) or "unknown"
 
-    now = _now()
-    job = IngestJob(
-        job_id=job_id,
-        status="queued",
-        filename=safe_name,
-        upload_path=str(upload_path),
-        title=title,
-        source_type=source_type,
-        course=course,
-        chapter=chapter,
-        language=language,
-        tags=normalize_tags(tags) if tags is not None else frontmatter.tags,
-        origin=_resolve_field(origin, frontmatter.origin),
-        publisher=_resolve_field(publisher, frontmatter.publisher),
-        author=_resolve_field(author, frontmatter.author),
-        created_at_source=_resolve_field(created_at_source, frontmatter.created_at_source),
-        updated_at_source=_resolve_field(updated_at_source, frontmatter.updated_at_source),
-        retrieved_at=_resolve_field(retrieved_at, frontmatter.retrieved_at),
-        url=_resolve_field(url, frontmatter.url),
-        canonical_url=_resolve_field(canonical_url, frontmatter.canonical_url),
-        external_id=_resolve_field(external_id, frontmatter.external_id),
-        collection=_resolve_field(collection, frontmatter.collection),
-        summary=_resolve_field(summary, frontmatter.summary),
-        ocr=ocr,
-        no_index=no_index,
-        continue_on_ocr_error=continue_on_ocr_error,
-        created_at=now,
-        updated_at=now,
-    )
-    write_job(config.data_dir, job)
-    return job
+        now = _now()
+        job = IngestJob(
+            job_id=job_id,
+            status="queued",
+            filename=safe_name,
+            upload_path=str(upload_path),
+            title=title,
+            source_type=source_type,
+            course=course,
+            chapter=chapter,
+            language=language,
+            tags=normalize_tags(tags) if tags is not None else frontmatter.tags,
+            origin=_resolve_field(origin, frontmatter.origin),
+            publisher=_resolve_field(publisher, frontmatter.publisher),
+            author=_resolve_field(author, frontmatter.author),
+            created_at_source=_resolve_field(created_at_source, frontmatter.created_at_source),
+            updated_at_source=_resolve_field(updated_at_source, frontmatter.updated_at_source),
+            retrieved_at=_resolve_field(retrieved_at, frontmatter.retrieved_at),
+            url=_resolve_field(url, frontmatter.url),
+            canonical_url=_resolve_field(canonical_url, frontmatter.canonical_url),
+            external_id=_resolve_field(external_id, frontmatter.external_id),
+            collection=_resolve_field(collection, frontmatter.collection),
+            summary=_resolve_field(summary, frontmatter.summary),
+            ocr=ocr,
+            no_index=no_index,
+            continue_on_ocr_error=continue_on_ocr_error,
+            created_at=now,
+            updated_at=now,
+        )
+        write_job(config.data_dir, job)
+        return job
+    except Exception:
+        upload_path.unlink(missing_ok=True)
+        raise
 
 
 def run_ingest_job(job_id: str, config: AppConfig) -> None:
