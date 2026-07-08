@@ -97,7 +97,7 @@ class ServerConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    data_dir: Path = Path(".study_local")
+    data_dir: Path = Path(".scribebase")
     weaviate: WeaviateConfig = Field(default_factory=WeaviateConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     pdf_detection: PDFDetectionConfig = Field(default_factory=PDFDetectionConfig)
@@ -124,7 +124,7 @@ def resolve_data_dir(data_dir: Path | None = None) -> Path:
     load_environment()
     if data_dir is not None:
         return data_dir
-    return Path(os.getenv(DATA_DIR_ENV, ".study_local"))
+    return Path(os.getenv(DATA_DIR_ENV, ".scribebase"))
 
 
 def resolve_config_path(config_path: Path | None = None) -> Path:

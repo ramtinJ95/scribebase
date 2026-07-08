@@ -177,7 +177,7 @@ def test_ingest_upload_accepts_text_file(tmp_path, monkeypatch) -> None:
             "language": "en",
             "tags": "kubernetes, notes",
             "origin": "manual",
-            "collection": "kubernetes-study",
+            "collection": "kubernetes-reading",
         },
         files={"file": ("notes.txt", b"plain text notes", "text/plain")},
     )
@@ -189,7 +189,7 @@ def test_ingest_upload_accepts_text_file(tmp_path, monkeypatch) -> None:
     assert body["source_type"] == "notes"
     assert body["tags"] == ["kubernetes", "notes"]
     assert body["origin"] == "manual"
-    assert body["collection"] == "kubernetes-study"
+    assert body["collection"] == "kubernetes-reading"
     assert started == [body["job_id"]]
     assert (tmp_path / "uploads" / f"{body['job_id']}_notes.txt").read_bytes() == b"plain text notes"
 

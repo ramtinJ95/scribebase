@@ -17,7 +17,7 @@ def test_extract_true_text_pdf_without_ocr(tmp_path) -> None:
     doc.close()
 
     config = AppConfig(
-        data_dir=tmp_path / ".study_local",
+        data_dir=tmp_path / ".scribebase",
         pdf_detection=PDFDetectionConfig(min_chars_per_page=50),
     )
     manifest = extract_source(
@@ -53,7 +53,7 @@ def test_auto_true_text_pdf_does_not_ocr_blank_pages(tmp_path, monkeypatch) -> N
 
     monkeypatch.setattr("scribebase.extraction._ocr_provider", fail_ocr_provider)
     config = AppConfig(
-        data_dir=tmp_path / ".study_local",
+        data_dir=tmp_path / ".scribebase",
         pdf_detection=PDFDetectionConfig(min_chars_per_page=50),
     )
 
@@ -99,7 +99,7 @@ def test_auto_scanned_pdf_ocr_image_backed_pages(tmp_path, monkeypatch) -> None:
             )
 
     monkeypatch.setattr("scribebase.extraction._ocr_provider", lambda *_: FakeOCRProvider())
-    config = AppConfig(data_dir=tmp_path / ".study_local")
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     manifest = extract_source(
         pdf,
@@ -146,7 +146,7 @@ def test_auto_mixed_pdf_ocr_scanned_pages(tmp_path, monkeypatch) -> None:
             )
 
     monkeypatch.setattr("scribebase.extraction._ocr_provider", lambda *_: FakeOCRProvider())
-    config = AppConfig(data_dir=tmp_path / ".study_local")
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     manifest = extract_source(
         pdf,

@@ -11,7 +11,7 @@ from scribebase.indexing import chunk_source
 def test_extract_plain_text_document(tmp_path) -> None:
     text = tmp_path / "notes.txt"
     text.write_text("Line one.\n\nLine two about Kubernetes scheduling.", encoding="utf-8")
-    config = AppConfig(data_dir=tmp_path / ".study_local")
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     manifest = extract_source(
         text,
@@ -48,7 +48,7 @@ def test_extract_markdown_document_preserves_markdown(tmp_path) -> None:
         "# Argo CD Notes\n\nGitOps reconciles declared state.\n\n## Sync waves\n\nSync waves order resources.",
         encoding="utf-8",
     )
-    config = AppConfig(data_dir=tmp_path / ".study_local")
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     manifest = extract_source(
         markdown,
@@ -79,7 +79,7 @@ def test_extract_markdown_document_preserves_markdown(tmp_path) -> None:
 def test_extract_empty_text_document_fails_before_page_marker(tmp_path) -> None:
     text = tmp_path / "empty.txt"
     text.write_text("\n\t  ", encoding="utf-8")
-    config = AppConfig(data_dir=tmp_path / ".study_local")
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     with pytest.raises(RuntimeError, match="Empty text document"):
         extract_source(
@@ -101,7 +101,7 @@ def test_extract_empty_text_document_fails_before_page_marker(tmp_path) -> None:
 def test_extract_text_document_persists_generic_metadata(tmp_path) -> None:
     text = tmp_path / "snippet.txt"
     text.write_text("A note about service meshes.", encoding="utf-8")
-    config = AppConfig(data_dir=tmp_path / ".study_local")
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     manifest = extract_source(
         text,
@@ -156,7 +156,7 @@ def test_extract_markdown_frontmatter_supplies_metadata_and_is_removed(tmp_path)
         "# GitOps\n\nArgo CD reconciles declared state.",
         encoding="utf-8",
     )
-    config = AppConfig(data_dir=tmp_path / ".study_local")
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     manifest = extract_source(
         markdown,
@@ -203,7 +203,7 @@ def test_extract_markdown_explicit_metadata_overrides_frontmatter(tmp_path) -> N
         "Body text.",
         encoding="utf-8",
     )
-    config = AppConfig(data_dir=tmp_path / ".study_local")
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     manifest = extract_source(
         markdown,
@@ -238,7 +238,7 @@ def test_extract_markdown_invalid_frontmatter_fails(tmp_path) -> None:
         "Body text.",
         encoding="utf-8",
     )
-    config = AppConfig(data_dir=tmp_path / ".study_local")
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     with pytest.raises(ValueError, match="Invalid Markdown frontmatter"):
         extract_source(

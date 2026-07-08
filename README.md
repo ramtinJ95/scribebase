@@ -288,7 +288,7 @@ llama-server \
 Notes:
 
 - `--pooling last` is required for Qwen embedding models.
-- The model name in `.study_local/config.yaml` must match the server model name.
+- The model name in `.scribebase/config.yaml` must match the server model name.
 - ScribeBase stores embedding model metadata and rejects accidental mixed-model retrieval by default.
 - The default chunking settings are conservative enough for small local embedding models.
 
@@ -296,7 +296,7 @@ Notes:
 
 LLM usage is optional. Without an LLM key, `ask` and `quiz` save context packs instead of failing.
 
-To enable generated answers and quizzes, configure an OpenAI-compatible chat API in `.study_local/config.yaml`:
+To enable generated answers and quizzes, configure an OpenAI-compatible chat API in `.scribebase/config.yaml`:
 
 ```yaml
 llm:
@@ -310,10 +310,10 @@ llm:
 
 ## Local data layout
 
-By default, ScribeBase writes to `.study_local/`:
+By default, ScribeBase writes to `.scribebase/`:
 
 ```text
-.study_local/
+.scribebase/
   config.yaml
   sources/<source_id>/
     original/
@@ -339,7 +339,7 @@ Originals, Markdown, and JSON metadata are the source of truth. Weaviate can be 
 
 ## Configuration
 
-Run `scribebase init` to create `.study_local/config.yaml`. Important sections:
+Run `scribebase init` to create `.scribebase/config.yaml`. Important sections:
 
 ```yaml
 weaviate:
