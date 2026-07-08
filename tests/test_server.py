@@ -161,7 +161,14 @@ def test_ingest_upload_accepts_text_file(tmp_path, monkeypatch) -> None:
     response = client.post(
         "/ingest",
         headers=_auth(),
-        data={"title": "Uploaded Notes", "source_type": "notes", "language": "en"},
+        data={
+            "title": "Uploaded Notes",
+            "source_type": "notes",
+            "language": "en",
+            "tags": "kubernetes, notes",
+            "origin": "manual",
+            "collection": "kubernetes-study",
+        },
         files={"file": ("notes.txt", b"plain text notes", "text/plain")},
     )
 
@@ -170,6 +177,9 @@ def test_ingest_upload_accepts_text_file(tmp_path, monkeypatch) -> None:
     assert body["status"] == "queued"
     assert body["title"] == "Uploaded Notes"
     assert body["source_type"] == "notes"
+    assert body["tags"] == ["kubernetes", "notes"]
+    assert body["origin"] == "manual"
+    assert body["collection"] == "kubernetes-study"
     assert started == [body["job_id"]]
     assert (tmp_path / "uploads" / f"{body['job_id']}_notes.txt").read_bytes() == b"plain text notes"
 

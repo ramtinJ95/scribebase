@@ -7,19 +7,17 @@ from pathlib import Path
 from typing import BinaryIO, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel
-
 from scribebase.config import AppConfig
 from scribebase.extraction import extract_source
 from scribebase.indexing import index_source
 from scribebase.logging_utils import setup_logging
-from scribebase.models import Language, SourceType
+from scribebase.models import GenericMetadata, Language, SourceType, normalize_tags
 from scribebase.paths import ensure_data_layout
 
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
 
 
-class IngestJob(BaseModel):
+class IngestJob(GenericMetadata):
     job_id: str
     status: JobStatus
     filename: str
@@ -40,7 +38,7 @@ class IngestJob(BaseModel):
     finished_at: datetime | None = None
 
 
-class IngestJobResponse(BaseModel):
+class IngestJobResponse(GenericMetadata):
     job_id: str
     status: JobStatus
     filename: str
@@ -76,6 +74,18 @@ def create_ingest_job(
     ocr: str,
     no_index: bool,
     continue_on_ocr_error: bool,
+    tags: list[str] | str | None = None,
+    origin: str | None = None,
+    publisher: str | None = None,
+    author: str | None = None,
+    created_at_source: datetime | str | None = None,
+    updated_at_source: datetime | str | None = None,
+    retrieved_at: datetime | str | None = None,
+    url: str | None = None,
+    canonical_url: str | None = None,
+    external_id: str | None = None,
+    collection: str | None = None,
+    summary: str | None = None,
 ) -> IngestJob:
     ensure_data_layout(config.data_dir)
     job_id = uuid4().hex
@@ -96,6 +106,18 @@ def create_ingest_job(
         course=course,
         chapter=chapter,
         language=language,
+        tags=normalize_tags(tags),
+        origin=origin,
+        publisher=publisher,
+        author=author,
+        created_at_source=created_at_source,
+        updated_at_source=updated_at_source,
+        retrieved_at=retrieved_at,
+        url=url,
+        canonical_url=canonical_url,
+        external_id=external_id,
+        collection=collection,
+        summary=summary,
         ocr=ocr,
         no_index=no_index,
         continue_on_ocr_error=continue_on_ocr_error,
@@ -127,6 +149,18 @@ def run_ingest_job(job_id: str, config: AppConfig) -> None:
             config,
             logger,
             job.continue_on_ocr_error,
+            tags=job.tags,
+            origin=job.origin,
+            publisher=job.publisher,
+            author=job.author,
+            created_at_source=job.created_at_source,
+            updated_at_source=job.updated_at_source,
+            retrieved_at=job.retrieved_at,
+            url=job.url,
+            canonical_url=job.canonical_url,
+            external_id=job.external_id,
+            collection=job.collection,
+            summary=job.summary,
         )
         job.source_id = manifest.source_id
         job.updated_at = _now()

@@ -27,3 +27,5 @@ def test_manifest_round_trip(tmp_path) -> None:
     loaded = read_manifest(path)
     assert loaded.source_id == "src1"
     assert loaded.title == "Title"
+    assert loaded.tags == []
+    assert loaded.origin is None

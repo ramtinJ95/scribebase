@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile, status
@@ -140,6 +141,18 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
         course: str | None = Form(None),
         chapter: str | None = Form(None),
         language: Language = Form("unknown"),
+        tags: str | None = Form(None),
+        origin: str | None = Form(None),
+        publisher: str | None = Form(None),
+        author: str | None = Form(None),
+        created_at_source: datetime | None = Form(None),
+        updated_at_source: datetime | None = Form(None),
+        retrieved_at: datetime | None = Form(None),
+        url: str | None = Form(None),
+        canonical_url: str | None = Form(None),
+        external_id: str | None = Form(None),
+        collection: str | None = Form(None),
+        summary: str | None = Form(None),
         ocr: str = Form("auto"),
         no_index: bool = Form(False),
         continue_on_ocr_error: bool = Form(False),
@@ -156,6 +169,18 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
             ocr,
             no_index,
             continue_on_ocr_error,
+            tags=tags,
+            origin=origin,
+            publisher=publisher,
+            author=author,
+            created_at_source=created_at_source,
+            updated_at_source=updated_at_source,
+            retrieved_at=retrieved_at,
+            url=url,
+            canonical_url=canonical_url,
+            external_id=external_id,
+            collection=collection,
+            summary=summary,
         )
         background_tasks.add_task(run_ingest_job, job.job_id, config)
         return public_job(job)

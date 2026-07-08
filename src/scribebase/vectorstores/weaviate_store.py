@@ -7,6 +7,28 @@ from scribebase.config import WeaviateConfig
 from scribebase.models import Chunk, SearchFilters, SearchResult
 
 
+WEAVIATE_CHUNK_PROPERTIES = {
+    "text",
+    "chunk_id",
+    "source_id",
+    "source_type",
+    "title",
+    "course",
+    "chapter",
+    "section",
+    "page_start",
+    "page_end",
+    "chunk_index",
+    "file_path",
+    "extraction_method",
+    "ocr_model",
+    "language",
+    "embedding_model",
+    "embedding_dimension",
+    "created_at",
+}
+
+
 class WeaviateStore:
     def __init__(self, config: WeaviateConfig):
         self.config = config
@@ -159,7 +181,11 @@ def build_filter(filters: SearchFilters):
 def _chunk_properties(chunk: Chunk) -> dict[str, Any]:
     data = chunk.model_dump(mode="json")
     data["created_at"] = data.get("created_at") or datetime.now(timezone.utc).isoformat()
-    return {key: value for key, value in data.items() if value is not None}
+    return {
+        key: value
+        for key, value in data.items()
+        if key in WEAVIATE_CHUNK_PROPERTIES and value is not None
+    }
 
 
 def _props_to_chunk(props: dict[str, Any]) -> dict[str, Any]:
