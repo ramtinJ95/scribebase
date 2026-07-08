@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shlex
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -282,6 +283,20 @@ def search(
     course: Optional[str] = None,
     chapter: Optional[str] = None,
     section: Optional[str] = None,
+    tags: Optional[str] = typer.Option(None, help="Comma-separated tags."),
+    origin: Optional[str] = None,
+    publisher: Optional[str] = None,
+    author: Optional[str] = None,
+    url: Optional[str] = None,
+    canonical_url: Optional[str] = None,
+    external_id: Optional[str] = None,
+    collection: Optional[str] = None,
+    created_at_source_after: Optional[str] = None,
+    created_at_source_before: Optional[str] = None,
+    updated_at_source_after: Optional[str] = None,
+    updated_at_source_before: Optional[str] = None,
+    retrieved_at_after: Optional[str] = None,
+    retrieved_at_before: Optional[str] = None,
     page_start: Optional[int] = None,
     page_end: Optional[int] = None,
     language: Optional[str] = None,
@@ -300,6 +315,20 @@ def search(
                 course=course,
                 chapter=chapter,
                 section=section,
+                tags=tags,
+                origin=origin,
+                publisher=publisher,
+                author=author,
+                url=url,
+                canonical_url=canonical_url,
+                external_id=external_id,
+                collection=collection,
+                created_at_source_after=created_at_source_after,
+                created_at_source_before=created_at_source_before,
+                updated_at_source_after=updated_at_source_after,
+                updated_at_source_before=updated_at_source_before,
+                retrieved_at_after=retrieved_at_after,
+                retrieved_at_before=retrieved_at_before,
                 page_start=page_start,
                 page_end=page_end,
                 language=language,
@@ -323,6 +352,20 @@ def ask(
     course: Optional[str] = None,
     chapter: Optional[str] = None,
     section: Optional[str] = None,
+    tags: Optional[str] = typer.Option(None, help="Comma-separated tags."),
+    origin: Optional[str] = None,
+    publisher: Optional[str] = None,
+    author: Optional[str] = None,
+    url: Optional[str] = None,
+    canonical_url: Optional[str] = None,
+    external_id: Optional[str] = None,
+    collection: Optional[str] = None,
+    created_at_source_after: Optional[str] = None,
+    created_at_source_before: Optional[str] = None,
+    updated_at_source_after: Optional[str] = None,
+    updated_at_source_before: Optional[str] = None,
+    retrieved_at_after: Optional[str] = None,
+    retrieved_at_before: Optional[str] = None,
     page_start: Optional[int] = None,
     page_end: Optional[int] = None,
     language: Optional[str] = None,
@@ -339,6 +382,20 @@ def ask(
             course=course,
             chapter=chapter,
             section=section,
+            tags=tags,
+            origin=origin,
+            publisher=publisher,
+            author=author,
+            url=url,
+            canonical_url=canonical_url,
+            external_id=external_id,
+            collection=collection,
+            created_at_source_after=created_at_source_after,
+            created_at_source_before=created_at_source_before,
+            updated_at_source_after=updated_at_source_after,
+            updated_at_source_before=updated_at_source_before,
+            retrieved_at_after=retrieved_at_after,
+            retrieved_at_before=retrieved_at_before,
             page_start=page_start,
             page_end=page_end,
             language=language,
@@ -437,17 +494,8 @@ def _local_filtered_chunks(config: AppConfig, filters: SearchFilters) -> list[Ch
     chunks = load_chunks(config.data_dir, filters.source_id)
     out: list[Chunk] = []
     for chunk in chunks:
-        if filters.title and chunk.title != filters.title:
-            continue
-        if filters.chapter and chunk.chapter != filters.chapter:
-            continue
-        if filters.source_type and chunk.source_type != filters.source_type:
-            continue
-        if filters.course and chunk.course != filters.course:
-            continue
-        if filters.language and chunk.language != filters.language:
-            continue
-        out.append(chunk)
+        if _matches_filters(chunk, filters):
+            out.append(chunk)
     if out:
         return out
     return _markdown_context_chunks(config, filters)
@@ -456,17 +504,7 @@ def _local_filtered_chunks(config: AppConfig, filters: SearchFilters) -> list[Ch
 def _markdown_context_chunks(config: AppConfig, filters: SearchFilters) -> list[Chunk]:
     out: list[Chunk] = []
     for manifest in list_manifests(config.data_dir):
-        if filters.source_id and manifest.source_id != filters.source_id:
-            continue
-        if filters.title and manifest.title != filters.title:
-            continue
-        if filters.chapter and manifest.chapter != filters.chapter:
-            continue
-        if filters.source_type and manifest.source_type != filters.source_type:
-            continue
-        if filters.course and manifest.course != filters.course:
-            continue
-        if filters.language and manifest.language != filters.language:
+        if not _matches_filters(manifest, filters):
             continue
         root = Path(manifest.data_dir)
         md_path = root / "markdown" / "document.md"
@@ -488,6 +526,18 @@ def _markdown_context_chunks(config: AppConfig, filters: SearchFilters) -> list[
                 title=manifest.title,
                 course=manifest.course,
                 chapter=filters.chapter or manifest.chapter,
+                tags=manifest.tags,
+                origin=manifest.origin,
+                publisher=manifest.publisher,
+                author=manifest.author,
+                created_at_source=manifest.created_at_source,
+                updated_at_source=manifest.updated_at_source,
+                retrieved_at=manifest.retrieved_at,
+                url=manifest.url,
+                canonical_url=manifest.canonical_url,
+                external_id=manifest.external_id,
+                collection=manifest.collection,
+                summary=manifest.summary,
                 section=None,
                 page_start=None,
                 page_end=None,
@@ -499,6 +549,53 @@ def _markdown_context_chunks(config: AppConfig, filters: SearchFilters) -> list[
             )
         )
     return out
+
+
+def _matches_filters(item, filters: SearchFilters) -> bool:  # noqa: ANN001
+    for field in [
+        "source_id",
+        "title",
+        "source_type",
+        "course",
+        "chapter",
+        "section",
+        "language",
+        "origin",
+        "publisher",
+        "author",
+        "url",
+        "canonical_url",
+        "external_id",
+        "collection",
+    ]:
+        expected = getattr(filters, field)
+        if expected is not None and getattr(item, field, None) != expected:
+            return False
+    if filters.tags and not set(filters.tags).issubset(set(getattr(item, "tags", []))):
+        return False
+    for field in ["created_at_source", "updated_at_source", "retrieved_at"]:
+        value = getattr(item, field, None)
+        after = getattr(filters, f"{field}_after")
+        before = getattr(filters, f"{field}_before")
+        if after is not None and (value is None or _date_key(value) < _date_key(after)):
+            return False
+        if before is not None and (value is None or _date_key(value) > _date_key(before)):
+            return False
+    if filters.page_start is not None:
+        page_end = getattr(item, "page_end", None)
+        if page_end is None or page_end < filters.page_start:
+            return False
+    if filters.page_end is not None:
+        page_start = getattr(item, "page_start", None)
+        if page_start is None or page_start > filters.page_end:
+            return False
+    return True
+
+
+def _date_key(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _ocr_doctor_message(command: str | None) -> tuple[bool, str]:

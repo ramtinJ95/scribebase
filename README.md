@@ -198,7 +198,9 @@ uv run scribebase rebuild-index --source-id SOURCE_ID
 uv run scribebase rebuild-index --all
 ```
 
-Use `rebuild-index --all` after changing embedding models or dimensions. It recreates the Weaviate collection so the vector index matches the current model.
+Use `rebuild-index --all` after changing embedding models, dimensions, or the
+Weaviate schema. It recreates the Weaviate collection so the vector index and
+filterable metadata fields match the current code.
 
 ### Inspect sources and chunks
 
@@ -415,6 +417,15 @@ curl -s http://127.0.0.1:8765/search \
   -H "Authorization: Bearer $SCRIBEBASE_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"query":"explain kubelet eviction","filters":{"source_type":"book"},"top_k":5}'
+```
+
+Metadata filters can target article/text metadata as well:
+
+```bash
+curl -s http://127.0.0.1:8765/search \
+  -H "Authorization: Bearer $SCRIBEBASE_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"progressive delivery","filters":{"source_type":"article","tags":["kubernetes","gitops"],"origin":"company_blog","collection":"infra-reading","created_at_source_after":"2026-01-01T00:00:00Z"},"top_k":5}'
 ```
 
 Example remote ingestion:

@@ -162,9 +162,28 @@ class SearchFilters(BaseModel):
     course: str | None = None
     chapter: str | None = None
     section: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    origin: str | None = None
+    publisher: str | None = None
+    author: str | None = None
+    url: str | None = None
+    canonical_url: str | None = None
+    external_id: str | None = None
+    collection: str | None = None
+    created_at_source_after: datetime | None = None
+    created_at_source_before: datetime | None = None
+    updated_at_source_after: datetime | None = None
+    updated_at_source_before: datetime | None = None
+    retrieved_at_after: datetime | None = None
+    retrieved_at_before: datetime | None = None
     page_start: int | None = None
     page_end: int | None = None
     language: str | None = None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, value: list[str] | str | None) -> list[str]:
+        return normalize_tags(value)
 
 
 class SearchResult(BaseModel):

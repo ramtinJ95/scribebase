@@ -15,6 +15,18 @@ WEAVIATE_CHUNK_PROPERTIES = {
     "title",
     "course",
     "chapter",
+    "tags",
+    "origin",
+    "publisher",
+    "author",
+    "created_at_source",
+    "updated_at_source",
+    "retrieved_at",
+    "url",
+    "canonical_url",
+    "external_id",
+    "collection",
+    "summary",
     "section",
     "page_start",
     "page_end",
@@ -73,6 +85,18 @@ class WeaviateStore:
                 Property(name="title", data_type=DataType.TEXT),
                 Property(name="course", data_type=DataType.TEXT),
                 Property(name="chapter", data_type=DataType.TEXT),
+                Property(name="tags", data_type=DataType.TEXT_ARRAY),
+                Property(name="origin", data_type=DataType.TEXT),
+                Property(name="publisher", data_type=DataType.TEXT),
+                Property(name="author", data_type=DataType.TEXT),
+                Property(name="created_at_source", data_type=DataType.DATE),
+                Property(name="updated_at_source", data_type=DataType.DATE),
+                Property(name="retrieved_at", data_type=DataType.DATE),
+                Property(name="url", data_type=DataType.TEXT),
+                Property(name="canonical_url", data_type=DataType.TEXT),
+                Property(name="external_id", data_type=DataType.TEXT),
+                Property(name="collection", data_type=DataType.TEXT),
+                Property(name="summary", data_type=DataType.TEXT),
                 Property(name="section", data_type=DataType.TEXT),
                 Property(name="page_start", data_type=DataType.INT),
                 Property(name="page_end", data_type=DataType.INT),
@@ -162,10 +186,34 @@ def build_filter(filters: SearchFilters):
     from weaviate.classes.query import Filter
 
     clauses = []
-    for field in ["source_id", "title", "source_type", "course", "chapter", "section", "language"]:
+    for field in [
+        "source_id",
+        "title",
+        "source_type",
+        "course",
+        "chapter",
+        "section",
+        "language",
+        "origin",
+        "publisher",
+        "author",
+        "url",
+        "canonical_url",
+        "external_id",
+        "collection",
+    ]:
         value = getattr(filters, field)
         if value is not None:
             clauses.append(Filter.by_property(field).equal(value))
+    if filters.tags:
+        clauses.append(Filter.by_property("tags").contains_all(filters.tags))
+    for field in ["created_at_source", "updated_at_source", "retrieved_at"]:
+        after = getattr(filters, f"{field}_after")
+        before = getattr(filters, f"{field}_before")
+        if after is not None:
+            clauses.append(Filter.by_property(field).greater_or_equal(after))
+        if before is not None:
+            clauses.append(Filter.by_property(field).less_or_equal(before))
     if filters.page_start is not None:
         clauses.append(Filter.by_property("page_end").greater_or_equal(filters.page_start))
     if filters.page_end is not None:
@@ -184,11 +232,12 @@ def _chunk_properties(chunk: Chunk) -> dict[str, Any]:
     return {
         key: value
         for key, value in data.items()
-        if key in WEAVIATE_CHUNK_PROPERTIES and value is not None
+        if key in WEAVIATE_CHUNK_PROPERTIES and value is not None and value != []
     }
 
 
 def _props_to_chunk(props: dict[str, Any]) -> dict[str, Any]:
-    if props.get("created_at") and not isinstance(props["created_at"], str):
-        props["created_at"] = props["created_at"].isoformat()
+    for field in ["created_at", "created_at_source", "updated_at_source", "retrieved_at"]:
+        if props.get(field) and not isinstance(props[field], str):
+            props[field] = props[field].isoformat()
     return props

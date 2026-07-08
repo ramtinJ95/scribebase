@@ -81,6 +81,10 @@ def test_search_returns_results(tmp_path, monkeypatch) -> None:
     def fake_search(query, filters, config, top_k, alpha, allow_model_mismatch):
         assert query == "kubelet eviction"
         assert filters.source_type == "book"
+        assert filters.tags == ["kubernetes", "ops"]
+        assert filters.origin == "company_blog"
+        assert filters.collection == "infra-reading"
+        assert filters.created_at_source_after.isoformat().startswith("2026-07-01")
         assert top_k == 3
         assert alpha == 0.5
         assert allow_model_mismatch is True
@@ -93,7 +97,13 @@ def test_search_returns_results(tmp_path, monkeypatch) -> None:
         headers=_auth(),
         json={
             "query": "kubelet eviction",
-            "filters": {"source_type": "book"},
+            "filters": {
+                "source_type": "book",
+                "tags": "kubernetes, ops",
+                "origin": "company_blog",
+                "collection": "infra-reading",
+                "created_at_source_after": "2026-07-01T00:00:00Z",
+            },
             "top_k": 3,
             "alpha": 0.5,
             "allow_model_mismatch": True,
