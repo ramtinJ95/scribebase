@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import fcntl
+import json
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 from uuid import uuid4
 
 from scribebase.chunking.chunker import chunk_markdown
@@ -10,7 +14,7 @@ from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
 from scribebase.extraction import read_page_metadata
 from scribebase.models import Chunk, SourceManifest
 from scribebase.source_registry import find_source, read_jsonl, write_jsonl, write_manifest
-from scribebase.vectorstores.weaviate_store import WeaviateStore
+from scribebase.vectorstores.weaviate_store import CollectionAliasMigrationError, WeaviateStore
 
 
 def chunk_source(manifest: SourceManifest, config: AppConfig) -> list[Chunk]:
@@ -32,8 +36,26 @@ def index_source(
     logger,
     no_create_collection: bool = False,
     allow_existing_model_mismatch: bool = False,
+) -> SourceManifest:
+    with _index_lock(config.data_dir):
+        return _index_source(
+            source_id,
+            config,
+            logger,
+            no_create_collection=no_create_collection,
+            allow_existing_model_mismatch=allow_existing_model_mismatch,
+        )
+
+
+def _index_source(
+    source_id: str,
+    config: AppConfig,
+    logger,
+    no_create_collection: bool = False,
+    allow_existing_model_mismatch: bool = False,
     collection_name: str | None = None,
     write_manifest_summary: bool = True,
+    chunks_output_path: Path | None = None,
 ) -> SourceManifest:
     manifest = find_source(config.data_dir, source_id)
     chunks = chunk_source(manifest, config)
@@ -41,13 +63,15 @@ def index_source(
         raise RuntimeError(f"No chunks created for source: {source_id}")
     logger.info("Created %s chunks", len(chunks))
 
-    chunks_path = Path(manifest.data_dir) / "metadata" / "chunks.jsonl"
-    old_chunk_ids = {chunk.chunk_id for chunk in load_chunks(config.data_dir, source_id)}
+    chunks_path = chunks_output_path or Path(manifest.data_dir) / "metadata" / "chunks.jsonl"
+    snapshot_path = Path(manifest.data_dir) / "metadata" / f"index_snapshot_{uuid4().hex}.jsonl"
     embedder = LlamaCppEmbeddingClient(config.embedding)
     total_batches = (len(chunks) + config.embedding.batch_size - 1) // config.embedding.batch_size
     store = WeaviateStore(config.weaviate)
     dimension: int | None = None
     inserted = 0
+    old_chunk_ids: set[str] = set()
+    mutation_started = False
     try:
         if no_create_collection:
             client = store.connect()
@@ -56,6 +80,7 @@ def index_source(
                 raise RuntimeError(f"Weaviate collection missing: {target}")
         else:
             store.ensure_collection()
+            old_chunk_ids = _snapshot_source(store, source_id, snapshot_path)
         for batch_index, batch_vectors in enumerate(
             embedder.embed_batches([c.text for c in chunks]), start=1
         ):
@@ -77,14 +102,27 @@ def index_source(
             for chunk in batch_chunks:
                 chunk.embedding_model = config.embedding.model
                 chunk.embedding_dimension = dimension
+            if collection_name is None:
+                mutation_started = True
             store.upsert_chunks(batch_chunks, batch_vectors, collection_name=collection_name)
             inserted += len(batch_chunks)
         if inserted != len(chunks):
             raise RuntimeError(f"Embedded {inserted} of {len(chunks)} chunks")
         if collection_name is None:
             store.delete_chunks(old_chunk_ids - {chunk.chunk_id for chunk in chunks})
+    except Exception as exc:
+        if collection_name is None and mutation_started:
+            try:
+                _restore_source(store, source_id, snapshot_path, config.embedding.batch_size)
+            except Exception as rollback_exc:
+                raise RuntimeError(
+                    f"Index update failed for {source_id}; restoring the previous vectors also failed: "
+                    f"{rollback_exc}"
+                ) from exc
+        raise
     finally:
         store.close()
+        snapshot_path.unlink(missing_ok=True)
 
     _write_chunks_atomic(chunks_path, chunks)
 
@@ -113,6 +151,16 @@ def load_chunks(data_dir: Path, source_id: str | None = None) -> list[Chunk]:
 
 
 def rebuild_index(source_id: str | None, all_sources: bool, config: AppConfig, logger) -> None:
+    with _index_lock(config.data_dir):
+        _rebuild_index(source_id, all_sources, config, logger)
+
+
+def _rebuild_index(
+    source_id: str | None,
+    all_sources: bool,
+    config: AppConfig,
+    logger,
+) -> None:
     from scribebase.source_registry import list_manifests
 
     if not all_sources and not source_id:
@@ -123,7 +171,7 @@ def rebuild_index(source_id: str | None, all_sources: bool, config: AppConfig, l
         else [manifest.source_id for manifest in list_manifests(config.data_dir)]
     )
     if not all_sources:
-        index_source(source_id or "", config, logger)
+        _index_source(source_id or "", config, logger)
         return
 
     staging = f"{config.weaviate.collection}Build{datetime.now(timezone.utc):%Y%m%d%H%M%S}{uuid4().hex[:6]}"
@@ -133,11 +181,16 @@ def rebuild_index(source_id: str | None, all_sources: bool, config: AppConfig, l
         store.create_collection(staging)
         expected = 0
         rebuilt: list[SourceManifest] = []
+        pending_chunks: list[tuple[Path, Path]] = []
         promoted = False
         try:
             for sid in ids:
                 if sid:
-                    manifest = index_source(
+                    manifest = find_source(config.data_dir, sid)
+                    live_chunks = Path(manifest.data_dir) / "metadata" / "chunks.jsonl"
+                    staged_chunks = live_chunks.with_name(f"chunks.{staging}.jsonl")
+                    pending_chunks.append((staged_chunks, live_chunks))
+                    manifest = _index_source(
                         sid,
                         config,
                         logger,
@@ -145,9 +198,10 @@ def rebuild_index(source_id: str | None, all_sources: bool, config: AppConfig, l
                         allow_existing_model_mismatch=True,
                         collection_name=staging,
                         write_manifest_summary=False,
+                        chunks_output_path=staged_chunks,
                     )
                     rebuilt.append(manifest)
-                    expected += len(load_chunks(config.data_dir, manifest.source_id))
+                    expected += _jsonl_row_count(staged_chunks)
             actual = store.object_count(staging)
             if actual != expected:
                 raise RuntimeError(
@@ -156,6 +210,8 @@ def rebuild_index(source_id: str | None, all_sources: bool, config: AppConfig, l
             previous = store.promote_collection(staging)
             promoted = True
             logger.info("Promoted %s as alias %s", staging, config.weaviate.collection)
+            for staged_chunks, live_chunks in pending_chunks:
+                staged_chunks.replace(live_chunks)
             for manifest in rebuilt:
                 write_manifest(manifest)
             if previous and previous != staging:
@@ -163,14 +219,17 @@ def rebuild_index(source_id: str | None, all_sources: bool, config: AppConfig, l
                     store.delete_collection(previous)
                 except Exception as exc:
                     logger.warning("Could not remove previous collection %s: %s", previous, exc)
-        except Exception:
-            if not promoted:
+        except Exception as exc:
+            preserve_staging = isinstance(exc, CollectionAliasMigrationError)
+            if not promoted and not preserve_staging:
                 try:
                     store.delete_collection(staging)
                 except Exception as exc:
                     logger.warning(
                         "Could not remove failed staging collection %s: %s", staging, exc
                     )
+            for staged_chunks, _ in pending_chunks:
+                staged_chunks.unlink(missing_ok=True)
             raise
     finally:
         store.close()
@@ -224,6 +283,67 @@ def _write_chunks_atomic(path: Path, chunks: list[Chunk]) -> None:
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _snapshot_source(store: WeaviateStore, source_id: str, path: Path) -> set[str]:
+    chunk_ids: set[str] = set()
+    with path.open("w") as output:
+        for chunk, vector in store.iter_source_chunks(source_id, include_vectors=True):
+            chunk_ids.add(chunk.chunk_id)
+            output.write(
+                json.dumps(
+                    {"chunk": chunk.model_dump(mode="json"), "vector": vector},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    return chunk_ids
+
+
+def _restore_source(
+    store: WeaviateStore,
+    source_id: str,
+    snapshot_path: Path,
+    batch_size: int,
+) -> None:
+    store.delete_source(source_id)
+    chunks: list[Chunk] = []
+    vectors: list[list[float]] = []
+    for row in _iter_jsonl(snapshot_path):
+        chunks.append(Chunk.model_validate(row["chunk"]))
+        vectors.append(row["vector"])
+        if len(chunks) == batch_size:
+            store.upsert_chunks(chunks, vectors)
+            chunks, vectors = [], []
+    if chunks:
+        store.upsert_chunks(chunks, vectors)
+
+
+def _iter_jsonl(path: Path) -> Iterator[dict]:
+    with path.open() as rows:
+        for line in rows:
+            if line.strip():
+                yield json.loads(line)
+
+
+def _jsonl_row_count(path: Path) -> int:
+    with path.open() as rows:
+        return sum(1 for line in rows if line.strip())
+
+
+@contextmanager
+def _index_lock(data_dir: Path):  # noqa: ANN202
+    data_dir.mkdir(parents=True, exist_ok=True)
+    path = data_dir / "index.lock"
+    with path.open("a+") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f"Another index operation is already running: {path}") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _set_embedding_summary(

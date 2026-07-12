@@ -42,6 +42,16 @@ WEAVIATE_CHUNK_PROPERTIES = {
 }
 
 
+class CollectionAliasMigrationError(RuntimeError):
+    def __init__(self, alias_name: str, target: str):
+        self.alias_name = alias_name
+        self.target = target
+        super().__init__(
+            f"Could not create alias {alias_name!r} after removing its legacy physical collection. "
+            f"Verified data remains in {target!r}; retry alias creation before deleting it."
+        )
+
+
 class WeaviateStore:
     def __init__(self, config: WeaviateConfig):
         self.config = config
@@ -146,7 +156,13 @@ class WeaviateStore:
             return previous
         if client.collections.exists(self.config.collection):
             client.collections.delete(self.config.collection)
-        client.alias.create(alias_name=self.config.collection, target_collection=target)
+        try:
+            client.alias.create(alias_name=self.config.collection, target_collection=target)
+        except Exception as exc:
+            alias = client.alias.get(alias_name=self.config.collection)
+            if alias is not None and alias.collection == target:
+                return None
+            raise CollectionAliasMigrationError(self.config.collection, target) from exc
         return None
 
     def delete_collection(self, name: str) -> None:
@@ -195,6 +211,40 @@ class WeaviateStore:
         collection = (self.client or self.connect()).collections.use(self.config.collection)
         for chunk_id in chunk_ids:
             collection.data.delete_by_id(generate_uuid5(chunk_id))
+
+    def iter_source_chunks(
+        self,
+        source_id: str,
+        include_vectors: bool = False,
+        page_size: int = 100,
+    ):
+        from weaviate.classes.query import Filter
+
+        self.ensure_collection()
+        collection = (self.client or self.connect()).collections.use(self.config.collection)
+        offset = 0
+        while True:
+            result = collection.query.fetch_objects(
+                filters=Filter.by_property("source_id").equal(source_id),
+                include_vector=self.config.vector_name if include_vectors else False,
+                limit=page_size,
+                offset=offset,
+            )
+            if not result.objects:
+                return
+            for obj in result.objects:
+                vector = None
+                if include_vectors:
+                    vectors = obj.vector or {}
+                    vector = vectors.get(self.config.vector_name)
+                    if vector is None:
+                        raise RuntimeError(
+                            f"Missing vector {self.config.vector_name!r} for source {source_id}"
+                        )
+                yield Chunk(**_props_to_chunk(dict(obj.properties))), vector
+            if len(result.objects) < page_size:
+                return
+            offset += len(result.objects)
 
     def delete_source(self, source_id: str) -> None:
         from weaviate.classes.query import Filter

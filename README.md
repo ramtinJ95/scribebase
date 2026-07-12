@@ -206,7 +206,9 @@ Weaviate schema. It builds and verifies a versioned physical collection before
 atomically promoting the configured collection alias. The first rebuild of a
 legacy physical collection briefly frees its name to create the alias; later
 rebuilds switch without search downtime. Failed staged rebuilds leave the live
-index unchanged.
+index unchanged. If that one-time alias creation fails after the legacy name is
+freed, ScribeBase preserves the verified staged collection and reports its name
+for recovery instead of deleting the only rebuilt copy.
 
 ### Inspect sources and chunks
 
