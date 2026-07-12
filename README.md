@@ -505,6 +505,14 @@ SHA-256. Duplicates return `409` with the existing `source_id`. Use
 `duplicate_policy=create` (multipart) or `"duplicate_policy": "create"` (JSON)
 only when a separate copy is intentional.
 
+Existing manifests are not hashed during request handling. Run the explicit
+one-time migration before relying on content-hash deduplication for legacy
+sources:
+
+```bash
+uv run scribebase sources backfill-identities
+```
+
 For reusable automation payload templates for company blogs, Hacker News,
 newsletters/RSS, notes, snippets, and docs, see
 [`docs/article-automation-contract.md`](docs/article-automation-contract.md).

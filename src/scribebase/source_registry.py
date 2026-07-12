@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-import json
+import fcntl
 import hashlib
+import json
 import re
 import shutil
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 from .models import SourceManifest, normalize_tags
-from .paths import source_dir, source_subdirs
+from .paths import source_dir, source_subdirs, validate_source_id
 
 
 class DuplicateSourceError(ValueError):
@@ -41,7 +44,12 @@ def manifest_path(root: Path) -> Path:
 def write_manifest(manifest: SourceManifest) -> Path:
     path = manifest_path(Path(manifest.data_dir))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(manifest.model_dump_json(indent=2))
+    temporary = path.with_suffix(f"{path.suffix}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(manifest.model_dump_json(indent=2))
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
 
 
@@ -95,6 +103,7 @@ def create_manifest(
 ) -> SourceManifest:
     now = datetime.now(timezone.utc)
     source_id = source_id or generate_source_id(title, now)
+    validate_source_id(source_id)
     paths = source_subdirs(data_dir, source_id)
     original_path = copy_original(input_path, paths["original"])
     manifest = SourceManifest(
@@ -163,7 +172,9 @@ def source_identity_key(
     external_id: str | None,
 ) -> str:
     if external_id:
-        return f"external:{(origin or '').strip().lower()}:{external_id.strip()}"
+        if not origin or not origin.strip():
+            raise ValueError("origin is required when external_id is provided")
+        return f"external:{origin.strip().lower()}:{external_id.strip()}"
     if source_url := canonical_url or url:
         return f"url:{normalize_url(source_url)}"
     return f"sha256:{content_sha256}"
@@ -171,9 +182,7 @@ def source_identity_key(
 
 def find_source_by_identity(data_dir: Path, identity_key: str) -> SourceManifest | None:
     for manifest in list_manifests(data_dir):
-        existing_key = manifest.identity_key
-        if existing_key is None:
-            existing_key = _backfill_identity(manifest)
+        existing_key = manifest.identity_key or _existing_identity_key(manifest)
         if existing_key == identity_key:
             return manifest
     return None
@@ -196,31 +205,82 @@ def hash_source(path: Path) -> str:
 
 def normalize_url(value: str) -> str:
     parsed = urlsplit(value.strip())
+    if parsed.username or parsed.password:
+        raise ValueError("Source identity URLs must not contain userinfo")
     scheme = parsed.scheme.lower()
     hostname = (parsed.hostname or "").lower()
-    port = f":{parsed.port}" if parsed.port else ""
-    netloc = f"{hostname}{port}"
+    if scheme not in {"http", "https"} or not hostname:
+        raise ValueError(f"Invalid HTTP(S) source URL: {value!r}")
+    port_number = parsed.port
+    port = (
+        f":{port_number}"
+        if port_number is not None
+        and not (scheme == "https" and port_number == 443)
+        and not (scheme == "http" and port_number == 80)
+        else ""
+    )
+    host_for_netloc = f"[{hostname}]" if ":" in hostname else hostname
+    netloc = f"{host_for_netloc}{port}"
     path = parsed.path.rstrip("/") or "/"
     return urlunsplit((scheme, netloc, path, parsed.query, ""))
 
 
-def _backfill_identity(manifest: SourceManifest) -> str | None:
-    original = Path(manifest.original_path)
-    if not original.exists():
-        return None
-    content_sha256 = manifest.content_sha256 or hash_source(original)
-    identity_key = source_identity_key(
-        content_sha256=content_sha256,
-        origin=manifest.origin,
-        canonical_url=manifest.canonical_url,
-        url=manifest.url,
-        external_id=manifest.external_id,
-    )
-    manifest.content_sha256 = content_sha256
-    manifest.identity_key = identity_key
-    manifest.updated_at = datetime.now(timezone.utc)
-    write_manifest(manifest)
-    return identity_key
+def backfill_source_identities(data_dir: Path) -> int:
+    updated = 0
+    with source_registry_lock(data_dir):
+        for manifest in list_manifests(data_dir):
+            if manifest.identity_key and manifest.content_sha256:
+                continue
+            original = Path(manifest.original_path)
+            if not original.exists():
+                continue
+            content_sha256 = manifest.content_sha256 or hash_source(original)
+            manifest.content_sha256 = content_sha256
+            manifest.identity_key = source_identity_key(
+                content_sha256=content_sha256,
+                origin=manifest.origin,
+                canonical_url=manifest.canonical_url,
+                url=manifest.url,
+                external_id=manifest.external_id if manifest.origin else None,
+            )
+            manifest.updated_at = datetime.now(timezone.utc)
+            write_manifest(manifest)
+            updated += 1
+    return updated
+
+
+def _existing_identity_key(manifest: SourceManifest) -> str | None:
+    if manifest.external_id and manifest.origin:
+        return source_identity_key(
+            content_sha256=manifest.content_sha256 or "",
+            origin=manifest.origin,
+            canonical_url=manifest.canonical_url,
+            url=manifest.url,
+            external_id=manifest.external_id,
+        )
+    if manifest.canonical_url or manifest.url:
+        return source_identity_key(
+            content_sha256=manifest.content_sha256 or "",
+            origin=manifest.origin,
+            canonical_url=manifest.canonical_url,
+            url=manifest.url,
+            external_id=None,
+        )
+    if manifest.content_sha256:
+        return f"sha256:{manifest.content_sha256}"
+    return None
+
+
+@contextmanager
+def source_registry_lock(data_dir: Path):  # noqa: ANN202
+    path = data_dir / "sources" / ".registry.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _hash_file(path: Path, digest) -> None:  # noqa: ANN001

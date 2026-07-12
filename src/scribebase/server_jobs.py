@@ -231,6 +231,7 @@ def create_ingest_job(
                         for existing in list_jobs(config.data_dir)
                         if existing.identity_key == identity_key
                         and existing.source_id != planned_source_id
+                        and _job_blocks_duplicate(config.data_dir, existing)
                     ),
                     None,
                 )
@@ -504,6 +505,18 @@ def _persist_claimed_job(data_dir: Path, job: IngestJob, claim_token: str) -> No
         if current.status != "running" or current.claim_token != claim_token:
             raise RuntimeError(f"Job claim was lost: {job.job_id}")
         write_job(data_dir, job)
+
+
+def _job_blocks_duplicate(data_dir: Path, job: IngestJob) -> bool:
+    if job.status in {"queued", "running"}:
+        return True
+    if job.status != "succeeded" or not job.source_id:
+        return False
+    try:
+        find_source(data_dir, job.source_id)
+        return True
+    except FileNotFoundError:
+        return False
 
 
 def _reservation_dir(data_dir: Path) -> Path:

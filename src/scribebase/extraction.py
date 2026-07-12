@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, TypeVar
+from uuid import uuid4
 
 from scribebase.config import AppConfig
 from scribebase.extractors.image_renderer import render_pdf_page
@@ -19,9 +20,17 @@ from scribebase.markdown.frontmatter import read_markdown_with_frontmatter
 from scribebase.markdown.normalize import combine_pages, normalize_page_markdown
 from scribebase.models import PageMetadata, SourceManifest, SourceMetadataInput, TextQuality
 from scribebase.ocr.shell_provider import ShellOCRProvider
-from scribebase.paths import chapter_file_name, source_subdirs
+from scribebase.paths import chapter_file_name, source_dir, source_root_subdirs
 from scribebase.pdf_router import evaluate_text_quality
-from scribebase.source_registry import create_manifest, prepare_source_identity, write_manifest
+from scribebase.source_registry import (
+    create_manifest,
+    find_source,
+    generate_source_id,
+    manifest_path,
+    prepare_source_identity,
+    source_registry_lock,
+    write_manifest,
+)
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"}
 MARKDOWN_EXTS = {".md", ".markdown"}
@@ -77,42 +86,81 @@ def extract_source(
     canonical_url = _resolve_field(canonical_url, frontmatter.canonical_url)
     url = _resolve_field(url, frontmatter.url)
     external_id = _resolve_field(external_id, frontmatter.external_id)
-    identity_key, content_sha256 = prepare_source_identity(
-        config.data_dir,
-        input_path,
-        origin=origin,
-        canonical_url=canonical_url,
-        url=url,
-        external_id=external_id,
-        source_id=source_id,
-        duplicate_policy=duplicate_policy,
-    )
-    manifest = create_manifest(
-        config.data_dir,
-        input_path,
-        title,
-        source_type,
-        course,
-        chapter,
-        language,
-        tags=tags if tags is not None else frontmatter.tags,
-        origin=origin,
-        publisher=_resolve_field(publisher, frontmatter.publisher),
-        author=_resolve_field(author, frontmatter.author),
-        created_at_source=_resolve_field(created_at_source, frontmatter.created_at_source),
-        updated_at_source=_resolve_field(updated_at_source, frontmatter.updated_at_source),
-        retrieved_at=_resolve_field(retrieved_at, frontmatter.retrieved_at),
-        url=url,
-        canonical_url=canonical_url,
-        external_id=external_id,
-        collection=_resolve_field(collection, frontmatter.collection),
-        summary=_resolve_field(summary, frontmatter.summary),
-        source_id=source_id,
-        identity_key=identity_key,
-        content_sha256=content_sha256,
-    )
+    source_id = source_id or generate_source_id(title)
+    with source_registry_lock(config.data_dir):
+        identity_key, content_sha256 = prepare_source_identity(
+            config.data_dir,
+            input_path,
+            origin=origin,
+            canonical_url=canonical_url,
+            url=url,
+            external_id=external_id,
+            source_id=source_id,
+            duplicate_policy=duplicate_policy,
+        )
+        live_root = source_dir(config.data_dir, source_id)
+        if live_root.exists():
+            try:
+                existing = find_source(config.data_dir, source_id)
+            except (FileNotFoundError, ValueError):
+                existing = None
+            if existing is not None:
+                if existing.identity_key != identity_key:
+                    raise ValueError(
+                        f"Source id already exists with different content: {source_id}"
+                    )
+                if (live_root / "markdown" / "document.md").exists():
+                    return existing
+
+        staging_data = config.data_dir / ".source-staging" / uuid4().hex
+        try:
+            manifest = create_manifest(
+                staging_data,
+                input_path,
+                title,
+                source_type,
+                course,
+                chapter,
+                language,
+                tags=tags if tags is not None else frontmatter.tags,
+                origin=origin,
+                publisher=_resolve_field(publisher, frontmatter.publisher),
+                author=_resolve_field(author, frontmatter.author),
+                created_at_source=_resolve_field(created_at_source, frontmatter.created_at_source),
+                updated_at_source=_resolve_field(updated_at_source, frontmatter.updated_at_source),
+                retrieved_at=_resolve_field(retrieved_at, frontmatter.retrieved_at),
+                url=url,
+                canonical_url=canonical_url,
+                external_id=external_id,
+                collection=_resolve_field(collection, frontmatter.collection),
+                summary=_resolve_field(summary, frontmatter.summary),
+                source_id=source_id,
+                identity_key=identity_key,
+                content_sha256=content_sha256,
+            )
+            manifest = _extract_manifest(
+                manifest,
+                chapter,
+                ocr,
+                config,
+                logger,
+                continue_on_ocr_error,
+            )
+            return _publish_staged_source(manifest, live_root)
+        finally:
+            shutil.rmtree(staging_data, ignore_errors=True)
+
+
+def _extract_manifest(
+    manifest: SourceManifest,
+    chapter: str | None,
+    ocr: str,
+    config: AppConfig,
+    logger,
+    continue_on_ocr_error: bool,
+) -> SourceManifest:
     logger.info("Ingest source: %s (%s)", manifest.title, manifest.source_id)
-    paths = source_subdirs(config.data_dir, manifest.source_id)
+    paths = source_root_subdirs(Path(manifest.data_dir))
     original = Path(manifest.original_path)
     if original.is_dir():
         pages = _extract_images(original, manifest, ocr, config, logger, continue_on_ocr_error)
@@ -155,6 +203,25 @@ def extract_source(
     return manifest
 
 
+def _publish_staged_source(manifest: SourceManifest, live_root: Path) -> SourceManifest:
+    staged_root = Path(manifest.data_dir)
+    for path in (staged_root / "metadata").glob("page_*.json"):
+        payload = json.loads(path.read_text())
+        for field in ["image_path", "markdown_path"]:
+            value = payload.get(field)
+            if value:
+                payload[field] = str(live_root / Path(value).relative_to(staged_root))
+        path.write_text(json.dumps(payload, indent=2))
+    manifest.original_path = str(live_root / Path(manifest.original_path).relative_to(staged_root))
+    manifest.data_dir = str(live_root)
+    manifest_path(staged_root).write_text(manifest.model_dump_json(indent=2))
+    if live_root.exists():
+        shutil.rmtree(live_root)
+    live_root.parent.mkdir(parents=True, exist_ok=True)
+    staged_root.replace(live_root)
+    return manifest
+
+
 def _extract_pdf(
     pdf_path: Path,
     manifest: SourceManifest,
@@ -163,7 +230,7 @@ def _extract_pdf(
     logger,
     continue_on_ocr_error: bool,
 ) -> list[PageMetadata]:
-    paths = source_subdirs(config.data_dir, manifest.source_id)
+    paths = source_root_subdirs(Path(manifest.data_dir))
     provider: ShellOCRProvider | None = None
     pages: list[PageMetadata] = []
     routes = _pdf_page_routes(pdf_path, config)
@@ -297,7 +364,7 @@ def _extract_images(
 ) -> list[PageMetadata]:
     if ocr == "never":
         raise RuntimeError("Image inputs require OCR; remove --ocr never")
-    paths = source_subdirs(config.data_dir, manifest.source_id)
+    paths = source_root_subdirs(Path(manifest.data_dir))
     provider = _ocr_provider(ocr, config)
     image_paths = _image_files(image_input)
     pages: list[PageMetadata] = []
@@ -331,7 +398,7 @@ def _extract_text_document(
     logger,
     input_type: Literal["markdown", "text"],
 ) -> list[PageMetadata]:
-    paths = source_subdirs(config.data_dir, manifest.source_id)
+    paths = source_root_subdirs(Path(manifest.data_dir))
     method: Literal["markdown", "text"] = input_type
     logger.info("Document: using %s extraction", method)
     if input_type == "markdown":

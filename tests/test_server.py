@@ -353,6 +353,22 @@ def test_article_duplicate_is_rejected_while_first_job_is_queued(tmp_path, monke
     assert explicit_copy.json()["source_id"] != first.json()["source_id"]
 
 
+def test_failed_unpublished_job_does_not_block_resubmission(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    payload = {"title": "Retry Article", "body": "# Retry\n\nContent."}
+    first = client.post("/articles", headers=_auth(), json=payload)
+    job = read_job(tmp_path, first.json()["job_id"])
+    job.status = "failed"
+    job.error = "extraction failed"
+    job.finished_at = datetime.now(timezone.utc)
+    write_job(tmp_path, job)
+
+    second = client.post("/articles", headers=_auth(), json=payload)
+
+    assert second.status_code == 200
+    assert second.json()["source_id"] != first.json()["source_id"]
+
+
 def test_article_ingest_json_uses_markdown_frontmatter_defaults(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
 

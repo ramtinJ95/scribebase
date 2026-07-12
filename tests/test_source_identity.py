@@ -1,5 +1,7 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -8,11 +10,13 @@ from scribebase.extraction import extract_source
 from scribebase.models import SourceManifest
 from scribebase.source_registry import (
     DuplicateSourceError,
+    backfill_source_identities,
     hash_source,
     normalize_url,
     prepare_source_identity,
     read_manifest,
     write_manifest,
+    list_manifests,
 )
 
 
@@ -132,6 +136,8 @@ def test_legacy_manifest_identity_is_backfilled(tmp_path) -> None:
         )
     )
 
+    assert backfill_source_identities(data_dir) == 1
+
     with pytest.raises(DuplicateSourceError):
         prepare_source_identity(
             data_dir,
@@ -160,3 +166,87 @@ def test_directory_hash_includes_relative_paths(tmp_path) -> None:
 
 def test_url_normalization_removes_fragment_and_trailing_slash() -> None:
     assert normalize_url("HTTPS://Example.COM/path/#fragment") == "https://example.com/path"
+
+
+def test_url_normalization_removes_default_ports() -> None:
+    assert normalize_url("https://example.com:443/path") == "https://example.com/path"
+    assert normalize_url("http://example.com:80/path") == "http://example.com/path"
+
+
+def test_external_id_requires_origin(tmp_path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("content")
+
+    with pytest.raises(ValueError, match="origin is required"):
+        prepare_source_identity(
+            tmp_path / "data",
+            source,
+            origin=None,
+            canonical_url=None,
+            url=None,
+            external_id="common-id",
+        )
+
+
+def test_unsafe_source_id_is_rejected_before_publication(tmp_path) -> None:
+    config = default_config()
+    config.data_dir = tmp_path / "data"
+    source = tmp_path / "source.txt"
+    source.write_text("content")
+
+    with pytest.raises(ValueError, match="Invalid source id"):
+        _extract(source, "Source", config, source_id="../outside")
+
+    assert not (tmp_path / "outside").exists()
+
+
+def test_failed_extraction_does_not_publish_manifest(tmp_path) -> None:
+    config = default_config()
+    config.data_dir = tmp_path / "data"
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"unsupported")
+
+    with pytest.raises(ValueError, match="Unsupported input type"):
+        _extract(source, "Source", config)
+
+    assert list_manifests(config.data_dir) == []
+
+
+def test_same_id_recovery_replaces_stale_generated_files(tmp_path) -> None:
+    config = default_config()
+    config.data_dir = tmp_path / "data"
+    source = tmp_path / "source.txt"
+    source.write_text("content")
+    manifest = _extract(source, "Source", config, source_id="stable-source")
+    root = Path(manifest.data_dir)
+    stale = root / "markdown" / "stale.md"
+    stale.write_text("stale")
+    (root / "markdown" / "document.md").unlink()
+
+    recovered = _extract(source, "Source", config, source_id="stable-source")
+
+    assert recovered.source_id == "stable-source"
+    assert not stale.exists()
+    assert (root / "markdown" / "document.md").exists()
+
+
+def test_concurrent_default_ingestion_publishes_one_identity(tmp_path) -> None:
+    config = default_config()
+    config.data_dir = tmp_path / "data"
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("same")
+    second.write_text("same")
+
+    def ingest(args):  # noqa: ANN001, ANN202
+        path, title = args
+        try:
+            return _extract(path, title, config).source_id
+        except DuplicateSourceError:
+            return "duplicate"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(ingest, [(first, "First"), (second, "Second")]))
+
+    assert results.count("duplicate") == 1
+    assert len(list_manifests(config.data_dir)) == 1
