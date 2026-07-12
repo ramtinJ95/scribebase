@@ -3,44 +3,86 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def extract_page_text(pdf_path: Path, page_index: int) -> str:
-    import fitz
+class PDFDocument:
+    def __init__(self, pdf_path: Path):
+        import fitz
 
-    doc = fitz.open(pdf_path)
-    try:
-        return doc[page_index].get_text("text") or ""
-    finally:
-        doc.close()
+        self.pdf_path = pdf_path
+        self.document = fitz.open(pdf_path)
+        self._consecutive_layout_failures = 0
 
+    def __enter__(self) -> "PDFDocument":
+        return self
 
-def extract_page_markdown(pdf_path: Path, page_index: int) -> tuple[str, str]:
-    """Return (markdown, method). Prefer PyMuPDF4LLM, fallback to PyMuPDF text."""
-    try:
-        import pymupdf4llm
+    def __exit__(self, *_args) -> None:
+        self.close()
 
-        md = pymupdf4llm.to_markdown(str(pdf_path), pages=[page_index])
-        if md and md.strip():
-            return md, "pymupdf4llm"
-    except Exception:
-        pass
-    return extract_page_text(pdf_path, page_index), "pymupdf"
+    @property
+    def page_count(self) -> int:
+        return self.document.page_count
 
+    def close(self) -> None:
+        self.document.close()
 
-def pdf_page_count(pdf_path: Path) -> int:
-    import fitz
+    def extract_page_text(self, page_index: int) -> str:
+        return self.document[page_index].get_text("text") or ""
 
-    doc = fitz.open(pdf_path)
-    try:
-        return doc.page_count
-    finally:
-        doc.close()
+    def page_has_images(self, page_index: int) -> bool:
+        return bool(self.document[page_index].get_images(full=True))
 
+    def page_has_visual_content(self, page_index: int) -> bool:
+        import fitz
 
-def page_has_images(pdf_path: Path, page_index: int) -> bool:
-    import fitz
+        page = self.document[page_index]
+        if page.get_drawings():
+            return True
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(0.25, 0.25), colorspace=fitz.csGRAY)
+        samples = pixmap.samples
+        if not samples:
+            return False
+        dark_pixels = sum(value < 245 for value in samples)
+        return dark_pixels / len(samples) >= 0.002
 
-    doc = fitz.open(pdf_path)
-    try:
-        return bool(doc[page_index].get_images(full=True))
-    finally:
-        doc.close()
+    def extract_page_markdown(
+        self,
+        page_index: int,
+        fallback_text: str,
+    ) -> tuple[str, str, str | None]:
+        """Return Markdown, method, and an optional visible fallback warning."""
+        try:
+            import pymupdf4llm
+        except ImportError as exc:
+            raise RuntimeError("PyMuPDF4LLM is unavailable") from exc
+
+        if self.document.is_closed:
+            raise RuntimeError("PDF document was unexpectedly closed before layout extraction")
+        try:
+            markdown = pymupdf4llm.to_markdown(
+                self.document,
+                pages=[page_index],
+                use_ocr=False,
+                force_text=True,
+            )
+            if markdown and markdown.strip():
+                self._consecutive_layout_failures = 0
+                return markdown, "pymupdf4llm", None
+            return fallback_text, "pymupdf", "pymupdf4llm_empty"
+        except (TypeError, AttributeError) as exc:
+            raise RuntimeError("Incompatible PyMuPDF4LLM API") from exc
+        except (MemoryError, ImportError, OSError):
+            raise
+        except (RuntimeError, ValueError) as exc:
+            self._consecutive_layout_failures += 1
+            if self._consecutive_layout_failures > 1:
+                raise RuntimeError("Repeated PyMuPDF4LLM page failures") from exc
+            warning = f"pymupdf4llm_failed:{exc.__class__.__name__}"
+            return fallback_text, "pymupdf", warning
+        finally:
+            if self.document.is_closed:
+                raise RuntimeError("PyMuPDF4LLM closed the caller-owned PDF document")
+
+    def render_page(self, page_index: int, output_path: Path, dpi: int = 300) -> Path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        pixmap = self.document[page_index].get_pixmap(dpi=dpi)
+        pixmap.save(output_path)
+        return output_path

@@ -277,6 +277,11 @@ Apple Vision uses `scripts/run_apple_vision_ocr.swift` and runs on-device.
 - `--ocr shell`: use the GLM-OCR shell provider when OCR is needed.
 - `--ocr apple_vision`: use Apple Vision when OCR is needed.
 
+ScribeBase keeps one PyMuPDF document open for the extraction pass. If
+PyMuPDF4LLM fails or returns empty output for a text-routed page, ScribeBase
+uses the cached PyMuPDF text and records `pymupdf4llm_failed:*` or
+`pymupdf4llm_empty` in that page's quality flags instead of hiding the fallback.
+
 ## Embeddings
 
 The default embedding configuration expects `Qwen3-Embedding-4B-Q4_K_M.gguf` served by llama.cpp on port `8080`.

@@ -10,13 +10,7 @@ from typing import Literal, TypeVar
 from uuid import uuid4
 
 from scribebase.config import AppConfig
-from scribebase.extractors.image_renderer import render_pdf_page
-from scribebase.extractors.pymupdf_extractor import (
-    extract_page_markdown,
-    extract_page_text,
-    page_has_images,
-    pdf_page_count,
-)
+from scribebase.extractors.pymupdf_extractor import PDFDocument
 from scribebase.markdown.frontmatter import read_markdown_with_frontmatter
 from scribebase.markdown.normalize import combine_pages, normalize_page_markdown
 from scribebase.models import PageMetadata, SourceManifest, SourceMetadataInput, TextQuality
@@ -48,6 +42,7 @@ class PDFPageRoute:
     raw_text: str
     quality: TextQuality
     has_images: bool
+    has_visual_content: bool
 
 
 def extract_source(
@@ -222,7 +217,7 @@ def _extract_manifest(
 
     manifest.extraction_summary.pages_total = len(pages)
     manifest.extraction_summary.pages_extracted_with_pymupdf4llm = sum(
-        1 for page in pages if page.extraction_method in {"pymupdf4llm", "pymupdf"}
+        1 for page in pages if page.extraction_method == "pymupdf4llm"
     )
     manifest.extraction_summary.pages_ocr = sum(
         1 for page in pages if page.extraction_method == "ocr"
@@ -333,62 +328,75 @@ def _extract_pdf(
     paths = source_root_subdirs(Path(manifest.data_dir))
     provider: ShellOCRProvider | None = None
     pages: list[PageMetadata] = []
-    routes = _pdf_page_routes(pdf_path, config)
-    likely_true_text_pdf = _likely_true_text_pdf(routes, config)
-    if ocr == "auto":
-        logger.info(
-            "PDF auto route: %s pages, %s text-layer pages, true_text_pdf=%s",
-            len(routes),
-            sum(1 for route in routes if _has_usable_text_layer(route.quality, config)),
-            likely_true_text_pdf,
-        )
-    for page_index, route in enumerate(routes):
-        page_number = page_index + 1
-        md_path = paths["markdown"] / f"page_{page_number:04d}.md"
-        image_path = paths["pages"] / f"page_{page_number:04d}.png"
-        use_ocr = _should_ocr_pdf_page(ocr, route, likely_true_text_pdf)
-        if not use_ocr:
-            logger.info("Page %s: using PyMuPDF4LLM", page_number)
-            meta = _extract_text_pdf_page(
-                pdf_path,
-                page_index,
-                md_path,
-                manifest,
-                route.quality,
+    with PDFDocument(pdf_path) as pdf:
+        routes = _pdf_page_routes(pdf, config)
+        likely_true_text_pdf = _likely_true_text_pdf(routes, config)
+        if ocr == "auto":
+            logger.info(
+                "PDF auto route: %s pages, %s text-layer pages, true_text_pdf=%s",
+                len(routes),
+                sum(1 for route in routes if _has_usable_text_layer(route.quality, config)),
+                likely_true_text_pdf,
             )
-        else:
-            if ocr == "never":
-                raise RuntimeError(f"Page {page_number} has insufficient text and OCR is disabled")
-            provider = provider or _ocr_provider(ocr, config)
-            render_dpi = provider.config.render_dpi or config.ocr.render_dpi
-            logger.info("Page %s: insufficient text, rendering at %s DPI", page_number, render_dpi)
-            render_pdf_page(pdf_path, page_index, image_path, render_dpi)
-            meta = _run_ocr_page(
-                image_path,
-                md_path,
-                manifest,
-                page_number,
-                page_index,
-                "pdf_page",
-                provider,
-                logger,
-                continue_on_ocr_error,
-                route.quality.flags,
-            )
-        _write_page_metadata(paths["metadata"], meta)
-        pages.append(meta)
+        for page_index, route in enumerate(routes):
+            page_number = page_index + 1
+            md_path = paths["markdown"] / f"page_{page_number:04d}.md"
+            image_path = paths["pages"] / f"page_{page_number:04d}.png"
+            use_ocr = _should_ocr_pdf_page(ocr, route, likely_true_text_pdf)
+            if not use_ocr:
+                logger.info("Page %s: using PyMuPDF4LLM", page_number)
+                meta = _extract_text_pdf_page(
+                    pdf,
+                    page_index,
+                    md_path,
+                    manifest,
+                    route,
+                    logger,
+                )
+            else:
+                if ocr == "never":
+                    raise RuntimeError(
+                        f"Page {page_number} has insufficient text and OCR is disabled"
+                    )
+                provider = provider or _ocr_provider(ocr, config)
+                render_dpi = provider.config.render_dpi or config.ocr.render_dpi
+                logger.info(
+                    "Page %s: insufficient text, rendering at %s DPI", page_number, render_dpi
+                )
+                pdf.render_page(page_index, image_path, render_dpi)
+                meta = _run_ocr_page(
+                    image_path,
+                    md_path,
+                    manifest,
+                    page_number,
+                    page_index,
+                    "pdf_page",
+                    provider,
+                    logger,
+                    continue_on_ocr_error,
+                    route.quality.flags,
+                )
+            _write_page_metadata(paths["metadata"], meta)
+            pages.append(meta)
     return pages
 
 
-def _pdf_page_routes(pdf_path: Path, config: AppConfig) -> list[PDFPageRoute]:
+def _pdf_page_routes(pdf: PDFDocument, config: AppConfig) -> list[PDFPageRoute]:
     routes = []
-    for page_index in range(pdf_page_count(pdf_path)):
-        raw_text = extract_page_text(pdf_path, page_index)
+    for page_index in range(pdf.page_count):
+        raw_text = pdf.extract_page_text(page_index)
+        has_images = pdf.page_has_images(page_index)
+        quality = evaluate_text_quality(raw_text, config.pdf_detection)
         routes.append(
             PDFPageRoute(
                 raw_text=raw_text,
-                quality=evaluate_text_quality(raw_text, config.pdf_detection),
-                has_images=page_has_images(pdf_path, page_index),
+                quality=quality,
+                has_images=has_images,
+                has_visual_content=(
+                    True
+                    if has_images or quality.is_true_text
+                    else pdf.page_has_visual_content(page_index)
+                ),
             )
         )
     return routes
@@ -421,22 +429,28 @@ def _should_ocr_pdf_page(ocr: str, route: PDFPageRoute, likely_true_text_pdf: bo
         return not route.quality.is_true_text
     if route.quality.is_true_text:
         return False
-    if likely_true_text_pdf and not route.has_images:
+    if likely_true_text_pdf and not route.has_visual_content:
         return False
-    if route.quality.char_count > 0 and not route.has_images:
+    serious_quality_flags = set(route.quality.flags) - {"too_few_chars"}
+    if route.quality.char_count > 0 and not route.has_images and not serious_quality_flags:
         return False
-    return route.has_images
+    if route.quality.char_count > 0 and not route.has_visual_content:
+        return False
+    return route.has_visual_content
 
 
 def _extract_text_pdf_page(
-    pdf_path: Path,
+    pdf: PDFDocument,
     page_index: int,
     md_path: Path,
     manifest: SourceManifest,
-    quality: TextQuality,
+    route: PDFPageRoute,
+    logger,
 ) -> PageMetadata:
     page_number = page_index + 1
-    page_md, method = extract_page_markdown(pdf_path, page_index)
+    page_md, method, fallback_warning = pdf.extract_page_markdown(page_index, route.raw_text)
+    if fallback_warning:
+        logger.warning("Page %s: %s; using PyMuPDF text fallback", page_number, fallback_warning)
     text = normalize_page_markdown(page_md, page_number)
     md_path.write_text(text)
     return PageMetadata(
@@ -444,13 +458,13 @@ def _extract_text_pdf_page(
         page_number=page_number,
         page_index=page_index,
         input_type="pdf_page",
-        text_layer_detected=quality.is_true_text,
+        text_layer_detected=route.quality.is_true_text,
         extraction_method=method,  # type: ignore[arg-type]
         image_path=None,
         markdown_path=str(md_path),
         char_count=len(text.strip()),
         word_count=len(text.split()),
-        quality_flags=quality.flags,
+        quality_flags=route.quality.flags + ([fallback_warning] if fallback_warning else []),
     )
 
 
