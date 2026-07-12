@@ -175,9 +175,7 @@ class WeaviateStore:
         except Exception as exc:
             alias = client.alias.get(alias_name=self.config.collection)
             if alias is not None and alias.collection == target:
-                if backup:
-                    self.delete_collection(backup)
-                return None
+                return backup
             if backup:
                 try:
                     self.create_collection(self.config.collection)
@@ -193,9 +191,7 @@ class WeaviateStore:
                     f"Alias migration failed; restored legacy collection {self.config.collection!r}"
                 ) from exc
             raise CollectionAliasMigrationError(self.config.collection, target) from exc
-        if backup:
-            self.delete_collection(backup)
-        return None
+        return backup
 
     def delete_collection(self, name: str) -> None:
         client = self.client or self.connect()

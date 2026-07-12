@@ -197,10 +197,10 @@ def test_promote_collection_migrates_legacy_physical_collection() -> None:
 
     previous = store.promote_collection("ChunkBuild1")
 
-    assert previous is None
+    assert previous == created[0]
     assert created[0].startswith("ChunkLegacy")
     assert copied == [("Chunk", created[0])]
-    assert collections.deleted == ["Chunk", created[0]]
+    assert collections.deleted == ["Chunk"]
     assert aliases.created == [{"alias_name": "Chunk", "target_collection": "ChunkBuild1"}]
 
 

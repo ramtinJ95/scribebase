@@ -342,15 +342,54 @@ def _jsonl_row_count(path: Path) -> int:
 
 
 def _install_staged_files(files: list[tuple[Path, Path]]) -> None:
-    for staged, live in files:
-        temporary = live.with_suffix(f"{live.suffix}.{uuid4().hex}.tmp")
-        try:
-            shutil.copy2(staged, temporary)
-            temporary.replace(live)
-        finally:
-            temporary.unlink(missing_ok=True)
-    for staged, _ in files:
-        staged.unlink()
+    backups: list[tuple[Path | None, Path]] = []
+    preserve_backups = False
+    try:
+        for _, live in files:
+            if live.exists():
+                backup = live.with_suffix(f"{live.suffix}.{uuid4().hex}.backup")
+                shutil.copy2(live, backup)
+            else:
+                backup = None
+            backups.append((backup, live))
+        for staged, live in files:
+            temporary = live.with_suffix(f"{live.suffix}.{uuid4().hex}.tmp")
+            try:
+                shutil.copy2(staged, temporary)
+                temporary.replace(live)
+            finally:
+                temporary.unlink(missing_ok=True)
+    except Exception as install_exc:
+        restore_errors = []
+        for backup, live in backups:
+            try:
+                if backup is None:
+                    live.unlink(missing_ok=True)
+                else:
+                    temporary = live.with_suffix(f"{live.suffix}.{uuid4().hex}.restore")
+                    try:
+                        shutil.copy2(backup, temporary)
+                        temporary.replace(live)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+            except Exception as exc:
+                restore_errors.append(f"{live}: {exc}")
+        if restore_errors:
+            preserve_backups = True
+            locations = ", ".join(str(backup) for backup, _ in backups if backup is not None)
+            raise RuntimeError(
+                "Local index metadata installation and rollback failed; backups preserved at "
+                f"{locations}: {'; '.join(restore_errors)}"
+            ) from install_exc
+        raise
+    else:
+        for staged, _ in files:
+            staged.unlink()
+    finally:
+        if not preserve_backups:
+            for backup, _ in backups:
+                if backup is not None:
+                    backup.unlink(missing_ok=True)
 
 
 @contextmanager

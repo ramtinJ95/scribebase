@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from scribebase.config import default_config
-from scribebase.indexing import _index_lock, index_source, rebuild_index
+from scribebase.indexing import _index_lock, _install_staged_files, index_source, rebuild_index
 from scribebase.models import Chunk, SourceManifest
 from scribebase.vectorstores.weaviate_store import CollectionAliasMigrationError
 
@@ -417,6 +418,34 @@ def test_post_promotion_file_failure_preserves_all_staged_artifacts(tmp_path, mo
     assert live_chunks.read_text() == "old chunks\n"
     staged = list(tmp_path.glob("sources/*/metadata/*.ChunkBuild*.*"))
     assert {path.name.split(".", 1)[0] for path in staged} == {"chunks", "manifest"}
+
+
+def test_staged_file_install_rolls_back_every_live_file(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    staged_chunks = tmp_path / "chunks.staged.jsonl"
+    staged_manifest = tmp_path / "manifest.staged.json"
+    live_chunks = tmp_path / "chunks.jsonl"
+    live_manifest = tmp_path / "manifest.json"
+    staged_chunks.write_text("new chunks\n")
+    staged_manifest.write_text("new manifest\n")
+    live_chunks.write_text("old chunks\n")
+    live_manifest.write_text("old manifest\n")
+    real_copy = __import__("shutil").copy2
+
+    def fail_second_staged_copy(source, destination):  # noqa: ANN001, ANN202
+        if Path(source) == staged_manifest:
+            raise OSError("manifest install failed")
+        return real_copy(source, destination)
+
+    monkeypatch.setattr("scribebase.indexing.shutil.copy2", fail_second_staged_copy)
+
+    with pytest.raises(OSError, match="manifest install failed"):
+        _install_staged_files([(staged_chunks, live_chunks), (staged_manifest, live_manifest)])
+
+    assert live_chunks.read_text() == "old chunks\n"
+    assert live_manifest.read_text() == "old manifest\n"
+    assert staged_chunks.read_text() == "new chunks\n"
+    assert staged_manifest.read_text() == "new manifest\n"
+    assert not list(tmp_path.glob("*.backup"))
 
 
 def test_index_lock_rejects_concurrent_mutation(tmp_path) -> None:  # noqa: ANN001
