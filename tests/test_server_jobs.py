@@ -409,6 +409,7 @@ def test_recovery_reuses_preassigned_source_after_extraction_crash(tmp_path) -> 
         config,
         setup_logging(tmp_path),
         source_id=job.source_id,
+        identity_owner=job.job_id,
     )
     job.status = "running"
     job.phase = "extracting"

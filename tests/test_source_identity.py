@@ -18,6 +18,8 @@ from scribebase.source_registry import (
     write_manifest,
     list_manifests,
 )
+from scribebase.server_jobs import create_ingest_job
+from io import BytesIO
 
 
 def _extract(path, title, config, **metadata):  # noqa: ANN001, ANN202
@@ -250,3 +252,74 @@ def test_concurrent_default_ingestion_publishes_one_identity(tmp_path) -> None:
 
     assert results.count("duplicate") == 1
     assert len(list_manifests(config.data_dir)) == 1
+
+
+def test_queued_api_identity_blocks_direct_ingestion(tmp_path) -> None:
+    config = default_config()
+    config.data_dir = tmp_path / "data"
+    candidate = tmp_path / "candidate.txt"
+    candidate.write_text("same")
+    create_ingest_job(
+        config,
+        "queued.txt",
+        BytesIO(b"same"),
+        "Queued",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        False,
+        False,
+    )
+
+    with pytest.raises(DuplicateSourceError):
+        _extract(candidate, "Direct", config)
+
+
+def test_same_id_with_changed_url_content_is_explicit_conflict(tmp_path) -> None:
+    config = default_config()
+    config.data_dir = tmp_path / "data"
+    source = tmp_path / "source.txt"
+    source.write_text("version one")
+    _extract(
+        source,
+        "Source",
+        config,
+        source_id="stable-source",
+        canonical_url="https://example.com/source",
+    )
+    source.write_text("version two")
+
+    with pytest.raises(ValueError, match="changed content"):
+        _extract(
+            source,
+            "Source",
+            config,
+            source_id="stable-source",
+            canonical_url="https://example.com/source",
+        )
+
+
+def test_backfill_aborts_before_writing_identity_collisions(tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    now = datetime.now(timezone.utc)
+    for source_id in ["one", "two"]:
+        original = tmp_path / f"{source_id}.txt"
+        original.write_text("same")
+        write_manifest(
+            SourceManifest(
+                source_id=source_id,
+                title=source_id,
+                source_type="notes",
+                original_path=str(original),
+                data_dir=str(data_dir / "sources" / source_id),
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    with pytest.raises(RuntimeError, match="Identity collisions found"):
+        backfill_source_identities(data_dir)
+
+    assert all(manifest.identity_key is None for manifest in list_manifests(data_dir))

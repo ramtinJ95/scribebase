@@ -188,6 +188,59 @@ def find_source_by_identity(data_dir: Path, identity_key: str) -> SourceManifest
     return None
 
 
+def reserve_source_identity(
+    data_dir: Path,
+    identity_key: str,
+    *,
+    owner_id: str,
+    source_id: str,
+    duplicate_policy: str,
+) -> None:
+    if duplicate_policy == "create":
+        return
+    with source_registry_lock(data_dir):
+        duplicate = find_source_by_identity(data_dir, identity_key)
+        if duplicate is not None and duplicate.source_id != source_id:
+            raise DuplicateSourceError(duplicate.source_id, identity_key)
+        path = _identity_reservation_path(data_dir, identity_key)
+        if path.exists():
+            reservation = json.loads(path.read_text())
+            if reservation["owner_id"] != owner_id:
+                raise DuplicateSourceError(reservation["source_id"], identity_key)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(f"{path.suffix}.{uuid4().hex}.tmp")
+        temporary.write_text(
+            json.dumps(
+                {"identity_key": identity_key, "owner_id": owner_id, "source_id": source_id},
+                indent=2,
+            )
+        )
+        temporary.replace(path)
+
+
+def release_source_identity(data_dir: Path, identity_key: str, owner_id: str) -> None:
+    with source_registry_lock(data_dir):
+        path = _identity_reservation_path(data_dir, identity_key)
+        if not path.exists():
+            return
+        reservation = json.loads(path.read_text())
+        if reservation["owner_id"] == owner_id:
+            path.unlink()
+
+
+def identity_reservation_owned(data_dir: Path, identity_key: str, owner_id: str) -> bool:
+    path = _identity_reservation_path(data_dir, identity_key)
+    if not path.exists():
+        return False
+    return json.loads(path.read_text())["owner_id"] == owner_id
+
+
+def _identity_reservation_path(data_dir: Path, identity_key: str) -> Path:
+    digest = hashlib.sha256(identity_key.encode()).hexdigest()
+    return data_dir / "sources" / ".identity-reservations" / f"{digest}.json"
+
+
 def hash_source(path: Path) -> str:
     digest = hashlib.sha256()
     if path.is_file():
@@ -226,27 +279,37 @@ def normalize_url(value: str) -> str:
 
 
 def backfill_source_identities(data_dir: Path) -> int:
-    updated = 0
     with source_registry_lock(data_dir):
+        pending: list[tuple[SourceManifest, str, str]] = []
+        identities: dict[str, list[str]] = {}
         for manifest in list_manifests(data_dir):
             if manifest.identity_key and manifest.content_sha256:
-                continue
-            original = Path(manifest.original_path)
-            if not original.exists():
-                continue
-            content_sha256 = manifest.content_sha256 or hash_source(original)
+                identity_key = manifest.identity_key
+                content_sha256 = manifest.content_sha256
+            else:
+                original = Path(manifest.original_path)
+                if not original.exists():
+                    continue
+                content_sha256 = manifest.content_sha256 or hash_source(original)
+                identity_key = source_identity_key(
+                    content_sha256=content_sha256,
+                    origin=manifest.origin,
+                    canonical_url=manifest.canonical_url,
+                    url=manifest.url,
+                    external_id=manifest.external_id if manifest.origin else None,
+                )
+                pending.append((manifest, identity_key, content_sha256))
+            identities.setdefault(identity_key, []).append(manifest.source_id)
+        collisions = {key: ids for key, ids in identities.items() if len(ids) > 1}
+        if collisions:
+            details = "; ".join(f"{key}: {', '.join(ids)}" for key, ids in collisions.items())
+            raise RuntimeError(f"Identity collisions found; no manifests changed: {details}")
+        for manifest, identity_key, content_sha256 in pending:
             manifest.content_sha256 = content_sha256
-            manifest.identity_key = source_identity_key(
-                content_sha256=content_sha256,
-                origin=manifest.origin,
-                canonical_url=manifest.canonical_url,
-                url=manifest.url,
-                external_id=manifest.external_id if manifest.origin else None,
-            )
+            manifest.identity_key = identity_key
             manifest.updated_at = datetime.now(timezone.utc)
             write_manifest(manifest)
-            updated += 1
-    return updated
+    return len(pending)
 
 
 def _existing_identity_key(manifest: SourceManifest) -> str | None:

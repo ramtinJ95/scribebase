@@ -26,8 +26,11 @@ from scribebase.source_registry import (
     create_manifest,
     find_source,
     generate_source_id,
+    identity_reservation_owned,
     manifest_path,
     prepare_source_identity,
+    release_source_identity,
+    reserve_source_identity,
     source_registry_lock,
     write_manifest,
 )
@@ -70,6 +73,7 @@ def extract_source(
     summary: str | None = None,
     source_id: str | None = None,
     duplicate_policy: str = "reject",
+    identity_owner: str | None = None,
 ) -> SourceManifest:
     input_path = input_path.expanduser().resolve()
     if not input_path.exists():
@@ -87,18 +91,29 @@ def extract_source(
     url = _resolve_field(url, frontmatter.url)
     external_id = _resolve_field(external_id, frontmatter.external_id)
     source_id = source_id or generate_source_id(title)
-    with source_registry_lock(config.data_dir):
-        identity_key, content_sha256 = prepare_source_identity(
-            config.data_dir,
-            input_path,
-            origin=origin,
-            canonical_url=canonical_url,
-            url=url,
-            external_id=external_id,
-            source_id=source_id,
-            duplicate_policy=duplicate_policy,
-        )
-        live_root = source_dir(config.data_dir, source_id)
+    identity_key, content_sha256 = prepare_source_identity(
+        config.data_dir,
+        input_path,
+        origin=origin,
+        canonical_url=canonical_url,
+        url=url,
+        external_id=external_id,
+        source_id=source_id,
+        duplicate_policy=duplicate_policy,
+    )
+    owner_id = identity_owner or uuid4().hex
+    reserve_source_identity(
+        config.data_dir,
+        identity_key,
+        owner_id=owner_id,
+        source_id=source_id,
+        duplicate_policy=duplicate_policy,
+    )
+    live_root = source_dir(config.data_dir, source_id)
+    staging_data = config.data_dir / ".source-staging" / uuid4().hex
+    try:
+        with source_registry_lock(config.data_dir):
+            _recover_source_publication(live_root)
         if live_root.exists():
             try:
                 existing = find_source(config.data_dir, source_id)
@@ -109,46 +124,55 @@ def extract_source(
                     raise ValueError(
                         f"Source id already exists with different content: {source_id}"
                     )
+                if existing.content_sha256 != content_sha256:
+                    raise ValueError(
+                        f"Source id {source_id} has changed content; submit with a new source id"
+                    )
                 if (live_root / "markdown" / "document.md").exists():
                     return existing
-
-        staging_data = config.data_dir / ".source-staging" / uuid4().hex
-        try:
-            manifest = create_manifest(
-                staging_data,
-                input_path,
-                title,
-                source_type,
-                course,
-                chapter,
-                language,
-                tags=tags if tags is not None else frontmatter.tags,
-                origin=origin,
-                publisher=_resolve_field(publisher, frontmatter.publisher),
-                author=_resolve_field(author, frontmatter.author),
-                created_at_source=_resolve_field(created_at_source, frontmatter.created_at_source),
-                updated_at_source=_resolve_field(updated_at_source, frontmatter.updated_at_source),
-                retrieved_at=_resolve_field(retrieved_at, frontmatter.retrieved_at),
-                url=url,
-                canonical_url=canonical_url,
-                external_id=external_id,
-                collection=_resolve_field(collection, frontmatter.collection),
-                summary=_resolve_field(summary, frontmatter.summary),
-                source_id=source_id,
-                identity_key=identity_key,
-                content_sha256=content_sha256,
-            )
-            manifest = _extract_manifest(
-                manifest,
-                chapter,
-                ocr,
-                config,
-                logger,
-                continue_on_ocr_error,
-            )
-            return _publish_staged_source(manifest, live_root)
-        finally:
-            shutil.rmtree(staging_data, ignore_errors=True)
+        manifest = create_manifest(
+            staging_data,
+            input_path,
+            title,
+            source_type,
+            course,
+            chapter,
+            language,
+            tags=tags if tags is not None else frontmatter.tags,
+            origin=origin,
+            publisher=_resolve_field(publisher, frontmatter.publisher),
+            author=_resolve_field(author, frontmatter.author),
+            created_at_source=_resolve_field(created_at_source, frontmatter.created_at_source),
+            updated_at_source=_resolve_field(updated_at_source, frontmatter.updated_at_source),
+            retrieved_at=_resolve_field(retrieved_at, frontmatter.retrieved_at),
+            url=url,
+            canonical_url=canonical_url,
+            external_id=external_id,
+            collection=_resolve_field(collection, frontmatter.collection),
+            summary=_resolve_field(summary, frontmatter.summary),
+            source_id=source_id,
+            identity_key=identity_key,
+            content_sha256=content_sha256,
+        )
+        manifest = _extract_manifest(
+            manifest,
+            chapter,
+            ocr,
+            config,
+            logger,
+            continue_on_ocr_error,
+        )
+        return _publish_staged_source(
+            manifest,
+            live_root,
+            config.data_dir,
+            identity_key,
+            owner_id,
+            duplicate_policy,
+        )
+    finally:
+        shutil.rmtree(staging_data, ignore_errors=True)
+        release_source_identity(config.data_dir, identity_key, owner_id)
 
 
 def _extract_manifest(
@@ -203,7 +227,14 @@ def _extract_manifest(
     return manifest
 
 
-def _publish_staged_source(manifest: SourceManifest, live_root: Path) -> SourceManifest:
+def _publish_staged_source(
+    manifest: SourceManifest,
+    live_root: Path,
+    data_dir: Path,
+    identity_key: str,
+    owner_id: str,
+    duplicate_policy: str,
+) -> SourceManifest:
     staged_root = Path(manifest.data_dir)
     for path in (staged_root / "metadata").glob("page_*.json"):
         payload = json.loads(path.read_text())
@@ -215,11 +246,44 @@ def _publish_staged_source(manifest: SourceManifest, live_root: Path) -> SourceM
     manifest.original_path = str(live_root / Path(manifest.original_path).relative_to(staged_root))
     manifest.data_dir = str(live_root)
     manifest_path(staged_root).write_text(manifest.model_dump_json(indent=2))
-    if live_root.exists():
-        shutil.rmtree(live_root)
-    live_root.parent.mkdir(parents=True, exist_ok=True)
-    staged_root.replace(live_root)
+    with source_registry_lock(data_dir):
+        if duplicate_policy == "reject" and not identity_reservation_owned(
+            data_dir, identity_key, owner_id
+        ):
+            raise RuntimeError(f"Source identity reservation was lost: {identity_key}")
+        try:
+            duplicate = find_source(data_dir, manifest.source_id) if live_root.exists() else None
+        except (FileNotFoundError, ValueError):
+            duplicate = None
+        if duplicate is not None and duplicate.identity_key != identity_key:
+            raise ValueError(
+                f"Source id already exists with different content: {manifest.source_id}"
+            )
+        backup = live_root.with_name(f".{live_root.name}.backup.{uuid4().hex}")
+        if live_root.exists():
+            live_root.replace(backup)
+        live_root.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            staged_root.replace(live_root)
+        except Exception:
+            if backup.exists() and not live_root.exists():
+                backup.replace(live_root)
+            raise
+        else:
+            shutil.rmtree(backup, ignore_errors=True)
     return manifest
+
+
+def _recover_source_publication(live_root: Path) -> None:
+    backups = sorted(live_root.parent.glob(f".{live_root.name}.backup.*"))
+    if live_root.exists():
+        for backup in backups:
+            shutil.rmtree(backup, ignore_errors=True)
+        return
+    if backups:
+        backups[-1].replace(live_root)
+        for backup in backups[:-1]:
+            shutil.rmtree(backup, ignore_errors=True)
 
 
 def _extract_pdf(

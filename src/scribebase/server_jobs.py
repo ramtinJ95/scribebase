@@ -31,6 +31,8 @@ from scribebase.source_registry import (
     DuplicateSourceError,
     find_source,
     prepare_source_identity,
+    release_source_identity,
+    reserve_source_identity,
     slugify,
 )
 
@@ -189,6 +191,18 @@ def create_ingest_job(
             source_id=planned_source_id,
             duplicate_policy=duplicate_policy,
         )
+        for existing in list_jobs(config.data_dir):
+            if existing.identity_key == identity_key and not _job_blocks_duplicate(
+                config.data_dir, existing
+            ):
+                release_source_identity(config.data_dir, identity_key, existing.job_id)
+        reserve_source_identity(
+            config.data_dir,
+            identity_key,
+            owner_id=job_id,
+            source_id=planned_source_id,
+            duplicate_policy=duplicate_policy,
+        )
         job = IngestJob(
             job_id=job_id,
             status="queued",
@@ -243,6 +257,8 @@ def create_ingest_job(
     except Exception:
         upload_path.unlink(missing_ok=True)
         _release_reservation(config.data_dir, job_id)
+        if "identity_key" in locals():
+            release_source_identity(config.data_dir, identity_key, job_id)
         raise
 
 
@@ -284,6 +300,7 @@ def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
                 summary=job.summary,
                 source_id=job.source_id,
                 duplicate_policy=job.duplicate_policy,
+                identity_owner=job.job_id,
             )
             if manifest.source_id != job.source_id:
                 raise RuntimeError(
@@ -326,6 +343,8 @@ def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
                 persisted = True
         if persisted and job.status == "succeeded":
             Path(job.upload_path).unlink(missing_ok=True)
+        elif persisted and job.status == "failed" and job.identity_key:
+            release_source_identity(config.data_dir, job.identity_key, job.job_id)
 
 
 def list_jobs(data_dir: Path) -> list[IngestJob]:
@@ -379,27 +398,43 @@ def claim_next_job(data_dir: Path, worker_id: str) -> IngestJob | None:
 
 
 def retry_job(config: AppConfig, job_id: str) -> IngestJob:
-    with _queue_lock(config.data_dir):
-        job = read_job(config.data_dir, job_id)
-        if job.status != "failed":
-            raise ValueError(f"Only failed jobs can be retried: {job_id}")
-        if not Path(job.upload_path).exists() and job.phase in {"queued", "extracting"}:
-            raise FileNotFoundError(f"Upload is no longer available for retry: {job_id}")
-        active = sum(
-            1 for existing in list_jobs(config.data_dir) if existing.status in {"queued", "running"}
+    job = read_job(config.data_dir, job_id)
+    if job.identity_key and job.source_id:
+        reserve_source_identity(
+            config.data_dir,
+            job.identity_key,
+            owner_id=job.job_id,
+            source_id=job.source_id,
+            duplicate_policy=job.duplicate_policy,
         )
-        if active >= config.server.max_active_jobs:
-            raise QueueFullError(
-                f"Ingestion queue is full ({active}/{config.server.max_active_jobs})"
+    try:
+        with _queue_lock(config.data_dir):
+            job = read_job(config.data_dir, job_id)
+            if job.status != "failed":
+                raise ValueError(f"Only failed jobs can be retried: {job_id}")
+            if not Path(job.upload_path).exists() and job.phase in {"queued", "extracting"}:
+                raise FileNotFoundError(f"Upload is no longer available for retry: {job_id}")
+            active = sum(
+                1
+                for existing in list_jobs(config.data_dir)
+                if existing.status in {"queued", "running"}
             )
-        job.status = "queued"
-        job.error = None
-        job.finished_at = None
-        job.claim_token = None
-        job.worker_id = None
-        job.updated_at = _now()
-        write_job(config.data_dir, job)
-        return job
+            if active >= config.server.max_active_jobs:
+                raise QueueFullError(
+                    f"Ingestion queue is full ({active}/{config.server.max_active_jobs})"
+                )
+            job.status = "queued"
+            job.error = None
+            job.finished_at = None
+            job.claim_token = None
+            job.worker_id = None
+            job.updated_at = _now()
+            write_job(config.data_dir, job)
+            return job
+    except Exception:
+        if job.identity_key:
+            release_source_identity(config.data_dir, job.identity_key, job.job_id)
+        raise
 
 
 def run_worker(config: AppConfig, once: bool = False, poll_seconds: float | None = None) -> None:
