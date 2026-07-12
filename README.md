@@ -64,12 +64,15 @@ Check the setup:
 uv run scribebase doctor
 ```
 
-Optional: start the HTTP API for remote ingestion, search, and context clients:
+Optional: start the HTTP API and ingestion worker in separate terminals for
+remote ingestion, search, and context clients:
 
 ```bash
 uv sync --extra server
 export SCRIBEBASE_API_TOKEN=change-me
 uv run scribebase serve --host 0.0.0.0 --port 8765
+# In another terminal with the same environment:
+uv run scribebase worker
 ```
 
 Ingest a PDF, Markdown file, or text file:
@@ -369,8 +372,8 @@ server:
 ScribeBase loads `.env` when present and lets deployment-specific environment variables override the YAML file:
 
 ```bash
-SCRIBEBASE_DATA_DIR=/Users/ramtin/scribebase-data
-SCRIBEBASE_CONFIG=/Users/ramtin/scribebase-data/config.yaml
+SCRIBEBASE_DATA_DIR=/Users/yourname/scribebase-data
+SCRIBEBASE_CONFIG=/Users/yourname/scribebase-data/config.yaml
 SCRIBEBASE_HOST=0.0.0.0
 SCRIBEBASE_PORT=8765
 SCRIBEBASE_API_TOKEN=change-me
@@ -401,6 +404,7 @@ Endpoints:
 - `POST /ingest`: upload a document and enqueue extraction/indexing.
 - `POST /articles`: submit Markdown/text article content as JSON and enqueue ingestion.
 - `GET /jobs/{job_id}`: inspect ingestion job status and errors.
+- `POST /jobs/{job_id}/retry`: requeue a failed ingestion job.
 - `POST /search`: hybrid search over chunks.
 - `POST /context`: search and return a ready-to-paste context pack.
 
@@ -515,6 +519,7 @@ JSON, and retrieve context from a remote ScribeBase server, see
 scribebase init
 scribebase doctor
 scribebase serve [--host HOST] [--port PORT]
+scribebase worker [--once]
 scribebase extract PATH --title TITLE [--ocr auto|always|never|shell|apple_vision]
 scribebase ingest PATH --title TITLE [--no-index]
 scribebase index --source-id SOURCE_ID
@@ -523,6 +528,7 @@ scribebase rebuild-index --all
 scribebase search QUERY [filters]
 scribebase sources list
 scribebase sources show SOURCE_ID
+scribebase sources backfill-identities
 scribebase chunks list --source-id SOURCE_ID
 scribebase chunks show CHUNK_ID
 ```

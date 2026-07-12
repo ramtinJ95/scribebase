@@ -1,7 +1,7 @@
 [project]
 name = "scribebase"
 version = "0.1.0"
-description = "Local-first OCR, Markdown, and Weaviate RAG app."
+description = "Local-first document ingestion and cited retrieval knowledge node."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [

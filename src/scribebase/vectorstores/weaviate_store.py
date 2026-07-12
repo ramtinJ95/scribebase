@@ -139,12 +139,6 @@ class WeaviateStore:
             ],
         )
 
-    def reset_collection(self) -> None:
-        client = self.client or self.connect()
-        if client.collections.exists(self.config.collection):
-            client.collections.delete(self.config.collection)
-        self.ensure_collection()
-
     def promote_collection(self, target: str) -> str | None:
         client = self.client or self.connect()
         alias = client.alias.get(alias_name=self.config.collection)
