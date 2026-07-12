@@ -498,10 +498,10 @@ def _restore_manifest_entries(entries: list[dict]) -> None:
 
 
 def _cleanup_manifest_transaction(marker: Path, entries: list[dict]) -> None:
+    marker.unlink(missing_ok=True)
     for entry in entries:
         Path(entry["staged"]).unlink(missing_ok=True)
         Path(entry["backup"]).unlink(missing_ok=True)
-    marker.unlink(missing_ok=True)
 
 
 def _write_atomic_text(path: Path, content: str) -> None:
