@@ -41,6 +41,14 @@ def test_config_round_trip(tmp_path) -> None:
     assert loaded.ocr.default_provider == "shell"
 
 
+def test_load_config_rejects_removed_llm_section(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("llm:\n  enabled: true\n")
+
+    with pytest.raises(ValueError, match="llm configuration section is no longer supported"):
+        load_config(path)
+
+
 def test_load_config_applies_env_overrides(tmp_path, monkeypatch) -> None:
     path = write_default_config(tmp_path)
     runtime_dir = tmp_path / "runtime"

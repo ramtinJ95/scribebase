@@ -376,10 +376,10 @@ SCRIBEBASE_PORT=8765
 SCRIBEBASE_API_TOKEN=change-me
 ```
 
-- `SCRIBEBASE_DATA_DIR`: local source, output, and log directory.
+- `SCRIBEBASE_DATA_DIR`: local source, job, upload, and log directory.
 - `SCRIBEBASE_CONFIG`: explicit config path. Defaults to `$SCRIBEBASE_DATA_DIR/config.yaml`.
-- `SCRIBEBASE_HOST` and `SCRIBEBASE_PORT`: reserved for the upcoming HTTP server.
-- `SCRIBEBASE_API_TOKEN`: shared secret read from the environment, not written to config.
+- `SCRIBEBASE_HOST` and `SCRIBEBASE_PORT`: HTTP API bind address and port.
+- `SCRIBEBASE_API_TOKEN`: required API bearer token, read from the environment and not written to config.
 
 See `.env.example` for a copyable template.
 

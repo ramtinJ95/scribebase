@@ -118,6 +118,16 @@ class AppConfig(BaseModel):
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_llm_config(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "llm" in data:
+            raise ValueError(
+                "The llm configuration section is no longer supported; "
+                "remove it and use a consuming agent for final generation"
+            )
+        return data
+
     @property
     def config_path(self) -> Path:
         return self.data_dir / "config.yaml"
