@@ -380,3 +380,35 @@ def test_pdf_document_closes_once_when_extraction_raises(tmp_path, monkeypatch) 
         )
 
     assert closes == 1
+
+
+def test_repeated_layout_failures_abort_instead_of_degrading_document(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    pdf_path = tmp_path / "book.pdf"
+    doc = fitz.open()
+    for _ in range(2):
+        page = doc.new_page()
+        page.insert_text((72, 72), "Text page " * 100)
+    doc.save(pdf_path)
+    doc.close()
+    monkeypatch.setattr(
+        "pymupdf4llm.to_markdown",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("systemic failure")),
+    )
+    config = AppConfig(data_dir=tmp_path / "data")
+
+    with pytest.raises(RuntimeError, match="Repeated PyMuPDF4LLM page failures"):
+        extract_source(
+            pdf_path,
+            "Book",
+            "book",
+            None,
+            None,
+            "en",
+            "never",
+            config,
+            logging.getLogger("test"),
+        )
+
+    assert not list((config.data_dir / "sources").glob("*/metadata/manifest.json"))

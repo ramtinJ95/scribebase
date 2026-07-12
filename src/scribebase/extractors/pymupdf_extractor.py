@@ -9,6 +9,7 @@ class PDFDocument:
 
         self.pdf_path = pdf_path
         self.document = fitz.open(pdf_path)
+        self._consecutive_layout_failures = 0
 
     def __enter__(self) -> "PDFDocument":
         return self
@@ -63,11 +64,17 @@ class PDFDocument:
                 force_text=True,
             )
             if markdown and markdown.strip():
+                self._consecutive_layout_failures = 0
                 return markdown, "pymupdf4llm", None
             return fallback_text, "pymupdf", "pymupdf4llm_empty"
         except (TypeError, AttributeError) as exc:
             raise RuntimeError("Incompatible PyMuPDF4LLM API") from exc
-        except Exception as exc:
+        except (MemoryError, ImportError, OSError):
+            raise
+        except (RuntimeError, ValueError) as exc:
+            self._consecutive_layout_failures += 1
+            if self._consecutive_layout_failures > 1:
+                raise RuntimeError("Repeated PyMuPDF4LLM page failures") from exc
             warning = f"pymupdf4llm_failed:{exc.__class__.__name__}"
             return fallback_text, "pymupdf", warning
         finally:
