@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from scribebase.config import WeaviateConfig
 from scribebase.models import Chunk, SearchFilters, SearchResult
@@ -51,7 +52,9 @@ class WeaviateStore:
 
         self.client = weaviate.connect_to_local(
             host=self.config.url.replace("http://", "").replace("https://", "").split(":")[0],
-            port=int(self.config.url.rsplit(":", 1)[1]) if ":" in self.config.url.rsplit("//", 1)[-1] else 8080,
+            port=int(self.config.url.rsplit(":", 1)[1])
+            if ":" in self.config.url.rsplit("//", 1)[-1]
+            else 8080,
         )
         return self.client
 
@@ -64,15 +67,28 @@ class WeaviateStore:
         return bool(client.is_ready())
 
     def ensure_collection(self) -> None:
-        from weaviate.classes.config import Configure, DataType, Property
-
         client = self.client or self.connect()
         if client.collections.exists(self.config.collection):
             return
+        if client.alias.get(alias_name=self.config.collection) is not None:
+            return
+        physical_name = f"{self.config.collection}Index{uuid4().hex[:10]}"
+        self.create_collection(physical_name)
+        client.alias.create(
+            alias_name=self.config.collection,
+            target_collection=physical_name,
+        )
+
+    def create_collection(self, name: str) -> None:
+        from weaviate.classes.config import Configure, DataType, Property
+
+        client = self.client or self.connect()
+        if client.collections.exists(name):
+            return
         client.collections.create(
-            self.config.collection,
-            vectorizer_config=[
-                Configure.NamedVectors.none(
+            name,
+            vector_config=[
+                Configure.Vectors.self_provided(
                     name=self.config.vector_name,
                     vector_index_config=Configure.VectorIndex.hnsw(),
                 )
@@ -117,13 +133,47 @@ class WeaviateStore:
             client.collections.delete(self.config.collection)
         self.ensure_collection()
 
-    def upsert_chunks(self, chunks: list[Chunk], vectors: list[list[float]]) -> None:
+    def promote_collection(self, target: str) -> str | None:
+        client = self.client or self.connect()
+        alias = client.alias.get(alias_name=self.config.collection)
+        previous = alias.collection if alias is not None else None
+        if alias is not None:
+            if not client.alias.update(
+                alias_name=self.config.collection,
+                new_target_collection=target,
+            ):
+                raise RuntimeError(f"Failed to promote Weaviate collection: {target}")
+            return previous
+        if client.collections.exists(self.config.collection):
+            client.collections.delete(self.config.collection)
+        client.alias.create(alias_name=self.config.collection, target_collection=target)
+        return None
+
+    def delete_collection(self, name: str) -> None:
+        client = self.client or self.connect()
+        if client.collections.exists(name):
+            client.collections.delete(name)
+
+    def object_count(self, collection_name: str | None = None) -> int:
+        name = collection_name or self.config.collection
+        collection = (self.client or self.connect()).collections.use(name)
+        result = collection.aggregate.over_all(total_count=True)
+        return int(result.total_count or 0)
+
+    def upsert_chunks(
+        self,
+        chunks: list[Chunk],
+        vectors: list[list[float]],
+        collection_name: str | None = None,
+    ) -> None:
         from weaviate.util import generate_uuid5
 
         if len(chunks) != len(vectors):
             raise ValueError("chunk/vector length mismatch")
-        self.ensure_collection()
-        collection = (self.client or self.connect()).collections.get(self.config.collection)
+        if collection_name is None:
+            self.ensure_collection()
+        name = collection_name or self.config.collection
+        collection = (self.client or self.connect()).collections.use(name)
         with collection.batch.dynamic() as batch:
             for chunk, vector in zip(chunks, vectors):
                 props = _chunk_properties(chunk)
@@ -136,11 +186,21 @@ class WeaviateStore:
         if failed_objects:
             raise RuntimeError(f"Failed to insert {len(failed_objects)} chunks into Weaviate")
 
+    def delete_chunks(self, chunk_ids: set[str]) -> None:
+        from weaviate.util import generate_uuid5
+
+        if not chunk_ids:
+            return
+        self.ensure_collection()
+        collection = (self.client or self.connect()).collections.use(self.config.collection)
+        for chunk_id in chunk_ids:
+            collection.data.delete_by_id(generate_uuid5(chunk_id))
+
     def delete_source(self, source_id: str) -> None:
         from weaviate.classes.query import Filter
 
         self.ensure_collection()
-        collection = (self.client or self.connect()).collections.get(self.config.collection)
+        collection = (self.client or self.connect()).collections.use(self.config.collection)
         collection.data.delete_many(where=Filter.by_property("source_id").equal(source_id))
 
     def hybrid_search(
@@ -154,7 +214,7 @@ class WeaviateStore:
         from weaviate.classes.query import MetadataQuery
 
         self.ensure_collection()
-        collection = (self.client or self.connect()).collections.get(self.config.collection)
+        collection = (self.client or self.connect()).collections.use(self.config.collection)
         kwargs: dict[str, Any] = {
             "query": query,
             "vector": vector,

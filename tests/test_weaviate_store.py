@@ -148,3 +148,62 @@ def test_build_filter_includes_generic_metadata(monkeypatch) -> None:
     assert clauses[("less_or_equal", "created_at_source")].isoformat().startswith("2026-07-31")
     assert clauses[("greater_or_equal", "retrieved_at")].isoformat().startswith("2026-07-08")
     assert clauses[("less_or_equal", "retrieved_at")].isoformat().startswith("2026-07-09")
+
+
+class FakeAliases:
+    def __init__(self, target: str | None = None, update_result: bool = True):
+        self.target = target
+        self.update_result = update_result
+        self.created = []
+        self.updated = []
+
+    def get(self, alias_name: str):  # noqa: ANN201
+        if self.target is None:
+            return None
+        return type("Alias", (), {"collection": self.target})()
+
+    def create(self, **kwargs) -> None:  # noqa: ANN003
+        self.created.append(kwargs)
+
+    def update(self, **kwargs) -> bool:  # noqa: ANN003
+        self.updated.append(kwargs)
+        return self.update_result
+
+
+class FakeCollections:
+    def __init__(self, existing: set[str]):
+        self.existing = existing
+        self.deleted = []
+
+    def exists(self, name: str) -> bool:
+        return name in self.existing
+
+    def delete(self, name: str) -> None:
+        self.deleted.append(name)
+        self.existing.discard(name)
+
+
+def test_promote_collection_migrates_legacy_physical_collection() -> None:
+    store = weaviate_store.WeaviateStore(weaviate_store.WeaviateConfig())
+    aliases = FakeAliases()
+    collections = FakeCollections({"Chunk", "ChunkBuild1"})
+    store.client = type("Client", (), {"alias": aliases, "collections": collections})()
+
+    previous = store.promote_collection("ChunkBuild1")
+
+    assert previous is None
+    assert collections.deleted == ["Chunk"]
+    assert aliases.created == [{"alias_name": "Chunk", "target_collection": "ChunkBuild1"}]
+
+
+def test_promote_collection_atomically_updates_existing_alias() -> None:
+    store = weaviate_store.WeaviateStore(weaviate_store.WeaviateConfig())
+    aliases = FakeAliases(target="ChunkIndexOld")
+    collections = FakeCollections({"ChunkBuild1", "ChunkIndexOld"})
+    store.client = type("Client", (), {"alias": aliases, "collections": collections})()
+
+    previous = store.promote_collection("ChunkBuild1")
+
+    assert previous == "ChunkIndexOld"
+    assert collections.deleted == []
+    assert aliases.updated == [{"alias_name": "Chunk", "new_target_collection": "ChunkBuild1"}]
