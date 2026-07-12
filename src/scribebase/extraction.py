@@ -42,6 +42,7 @@ class PDFPageRoute:
     raw_text: str
     quality: TextQuality
     has_images: bool
+    has_visual_content: bool
 
 
 def extract_source(
@@ -216,7 +217,7 @@ def _extract_manifest(
 
     manifest.extraction_summary.pages_total = len(pages)
     manifest.extraction_summary.pages_extracted_with_pymupdf4llm = sum(
-        1 for page in pages if page.extraction_method in {"pymupdf4llm", "pymupdf"}
+        1 for page in pages if page.extraction_method == "pymupdf4llm"
     )
     manifest.extraction_summary.pages_ocr = sum(
         1 for page in pages if page.extraction_method == "ocr"
@@ -384,11 +385,18 @@ def _pdf_page_routes(pdf: PDFDocument, config: AppConfig) -> list[PDFPageRoute]:
     routes = []
     for page_index in range(pdf.page_count):
         raw_text = pdf.extract_page_text(page_index)
+        has_images = pdf.page_has_images(page_index)
+        quality = evaluate_text_quality(raw_text, config.pdf_detection)
         routes.append(
             PDFPageRoute(
                 raw_text=raw_text,
-                quality=evaluate_text_quality(raw_text, config.pdf_detection),
-                has_images=pdf.page_has_images(page_index),
+                quality=quality,
+                has_images=has_images,
+                has_visual_content=(
+                    True
+                    if has_images or quality.is_true_text
+                    else pdf.page_has_visual_content(page_index)
+                ),
             )
         )
     return routes
@@ -421,11 +429,14 @@ def _should_ocr_pdf_page(ocr: str, route: PDFPageRoute, likely_true_text_pdf: bo
         return not route.quality.is_true_text
     if route.quality.is_true_text:
         return False
-    if likely_true_text_pdf and not route.has_images:
+    if likely_true_text_pdf and not route.has_visual_content:
         return False
-    if route.quality.char_count > 0 and not route.has_images:
+    serious_quality_flags = set(route.quality.flags) - {"too_few_chars"}
+    if route.quality.char_count > 0 and not route.has_images and not serious_quality_flags:
         return False
-    return route.has_images
+    if route.quality.char_count > 0 and not route.has_visual_content:
+        return False
+    return route.has_visual_content
 
 
 def _extract_text_pdf_page(
