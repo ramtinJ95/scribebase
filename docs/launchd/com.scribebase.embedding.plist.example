@@ -10,7 +10,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/llama-server</string>
+    <string>/absolute/path/to/llama-server</string>
     <string>--model</string>
     <string>/Users/yourname/scribebase/models/Qwen3-Embedding-4B-Q4_K_M.gguf</string>
     <string>--embedding</string>

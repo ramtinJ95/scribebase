@@ -193,11 +193,20 @@ Template plists live in `docs/launchd/`:
 
 Copy each template to `~/Library/LaunchAgents/`, remove `.example`, and edit:
 
+- executable paths for `uv` and `llama-server`
 - repository path (use the same path in all three templates)
 - data path
 - token
 - model path
 - log paths
+
+launchd requires absolute executable paths. Find the paths for this machine
+instead of assuming a Homebrew prefix:
+
+```bash
+command -v uv
+command -v llama-server
+```
 
 Run `scribebase init` first so the configured data and log directories exist.
 The source/data directory must be a local filesystem; the worker's advisory

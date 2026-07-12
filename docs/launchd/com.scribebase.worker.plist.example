@@ -10,7 +10,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/uv</string>
+    <string>/absolute/path/to/uv</string>
     <string>run</string>
     <string>scribebase</string>
     <string>worker</string>
