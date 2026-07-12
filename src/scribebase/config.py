@@ -6,7 +6,7 @@ from typing import Any
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 CONFIG_ENV = "SCRIBEBASE_CONFIG"
@@ -100,7 +100,22 @@ class ServerConfig(BaseModel):
     worker_heartbeat_seconds: float = Field(default=2.0, gt=0)
     worker_stale_seconds: float = Field(default=15.0, gt=0)
     upload_reservation_timeout_seconds: int = Field(default=60 * 60, gt=0)
+    identity_orphan_job_seconds: int = Field(default=5 * 60, ge=0)
+    identity_direct_reservation_seconds: int = Field(default=24 * 60 * 60, gt=0)
+    identity_reservation_heartbeat_seconds: float = Field(default=60.0, gt=0)
     failed_upload_retention_seconds: int = Field(default=7 * 24 * 60 * 60, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_identity_heartbeat(self) -> "ServerConfig":
+        if (
+            self.identity_direct_reservation_seconds
+            <= self.identity_reservation_heartbeat_seconds * 2
+        ):
+            raise ValueError(
+                "identity_direct_reservation_seconds must exceed twice "
+                "identity_reservation_heartbeat_seconds"
+            )
+        return self
 
 
 class AppConfig(BaseModel):

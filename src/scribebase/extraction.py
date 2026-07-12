@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, TypeVar
+from uuid import uuid4
 
 from scribebase.config import AppConfig
 from scribebase.extractors.image_renderer import render_pdf_page
@@ -19,9 +21,21 @@ from scribebase.markdown.frontmatter import read_markdown_with_frontmatter
 from scribebase.markdown.normalize import combine_pages, normalize_page_markdown
 from scribebase.models import PageMetadata, SourceManifest, SourceMetadataInput, TextQuality
 from scribebase.ocr.shell_provider import ShellOCRProvider
-from scribebase.paths import chapter_file_name, source_subdirs
+from scribebase.paths import chapter_file_name, source_dir, source_root_subdirs
 from scribebase.pdf_router import evaluate_text_quality
-from scribebase.source_registry import create_manifest, write_manifest
+from scribebase.source_registry import (
+    create_manifest,
+    find_source,
+    generate_source_id,
+    identity_reservation_owned,
+    manifest_path,
+    prepare_source_identity,
+    refresh_source_identity_reservation,
+    release_source_identity,
+    reserve_source_identity,
+    source_registry_lock,
+    write_manifest,
+)
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"}
 MARKDOWN_EXTS = {".md", ".markdown"}
@@ -60,6 +74,8 @@ def extract_source(
     collection: str | None = None,
     summary: str | None = None,
     source_id: str | None = None,
+    duplicate_policy: str = "reject",
+    identity_owner: str | None = None,
 ) -> SourceManifest:
     input_path = input_path.expanduser().resolve()
     if not input_path.exists():
@@ -72,30 +88,115 @@ def extract_source(
     course = _resolve_field(course, frontmatter.course)
     chapter = _resolve_field(chapter, frontmatter.chapter)
     language = _resolve_field(language, frontmatter.language) or "unknown"
-    manifest = create_manifest(
+    origin = _resolve_field(origin, frontmatter.origin)
+    canonical_url = _resolve_field(canonical_url, frontmatter.canonical_url)
+    url = _resolve_field(url, frontmatter.url)
+    external_id = _resolve_field(external_id, frontmatter.external_id)
+    source_id = source_id or generate_source_id(title)
+    identity_key, content_sha256 = prepare_source_identity(
         config.data_dir,
         input_path,
-        title,
-        source_type,
-        course,
-        chapter,
-        language,
-        tags=tags if tags is not None else frontmatter.tags,
-        origin=_resolve_field(origin, frontmatter.origin),
-        publisher=_resolve_field(publisher, frontmatter.publisher),
-        author=_resolve_field(author, frontmatter.author),
-        created_at_source=_resolve_field(created_at_source, frontmatter.created_at_source),
-        updated_at_source=_resolve_field(updated_at_source, frontmatter.updated_at_source),
-        retrieved_at=_resolve_field(retrieved_at, frontmatter.retrieved_at),
-        url=_resolve_field(url, frontmatter.url),
-        canonical_url=_resolve_field(canonical_url, frontmatter.canonical_url),
-        external_id=_resolve_field(external_id, frontmatter.external_id),
-        collection=_resolve_field(collection, frontmatter.collection),
-        summary=_resolve_field(summary, frontmatter.summary),
+        origin=origin,
+        canonical_url=canonical_url,
+        url=url,
+        external_id=external_id,
         source_id=source_id,
+        duplicate_policy=duplicate_policy,
     )
+    owner_id = identity_owner or uuid4().hex
+    reserve_source_identity(
+        config.data_dir,
+        identity_key,
+        owner_id=owner_id,
+        source_id=source_id,
+        duplicate_policy=duplicate_policy,
+        owner_type="job" if identity_owner else "direct",
+    )
+    heartbeat_stop, heartbeat_thread = _start_identity_heartbeat(
+        config,
+        identity_key,
+        owner_id,
+        enabled=duplicate_policy == "reject",
+    )
+    live_root = source_dir(config.data_dir, source_id)
+    staging_data = config.data_dir / ".source-staging" / uuid4().hex
+    try:
+        with source_registry_lock(config.data_dir):
+            _recover_source_publication(live_root)
+        if live_root.exists():
+            try:
+                existing = find_source(config.data_dir, source_id)
+            except (FileNotFoundError, ValueError):
+                existing = None
+            if existing is not None:
+                if existing.identity_key != identity_key:
+                    raise ValueError(
+                        f"Source id already exists with different content: {source_id}"
+                    )
+                if existing.content_sha256 != content_sha256:
+                    raise ValueError(
+                        f"Source id {source_id} has changed content; submit with a new source id"
+                    )
+                if (live_root / "markdown" / "document.md").exists():
+                    return existing
+        manifest = create_manifest(
+            staging_data,
+            input_path,
+            title,
+            source_type,
+            course,
+            chapter,
+            language,
+            tags=tags if tags is not None else frontmatter.tags,
+            origin=origin,
+            publisher=_resolve_field(publisher, frontmatter.publisher),
+            author=_resolve_field(author, frontmatter.author),
+            created_at_source=_resolve_field(created_at_source, frontmatter.created_at_source),
+            updated_at_source=_resolve_field(updated_at_source, frontmatter.updated_at_source),
+            retrieved_at=_resolve_field(retrieved_at, frontmatter.retrieved_at),
+            url=url,
+            canonical_url=canonical_url,
+            external_id=external_id,
+            collection=_resolve_field(collection, frontmatter.collection),
+            summary=_resolve_field(summary, frontmatter.summary),
+            source_id=source_id,
+            identity_key=identity_key,
+            content_sha256=content_sha256,
+        )
+        manifest = _extract_manifest(
+            manifest,
+            chapter,
+            ocr,
+            config,
+            logger,
+            continue_on_ocr_error,
+        )
+        return _publish_staged_source(
+            manifest,
+            live_root,
+            config.data_dir,
+            identity_key,
+            owner_id,
+            duplicate_policy,
+        )
+    finally:
+        if heartbeat_stop is not None and heartbeat_thread is not None:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=config.server.identity_reservation_heartbeat_seconds + 1)
+        shutil.rmtree(staging_data, ignore_errors=True)
+        release_source_identity(config.data_dir, identity_key, owner_id)
+
+
+def _extract_manifest(
+    manifest: SourceManifest,
+    chapter: str | None,
+    ocr: str,
+    config: AppConfig,
+    logger,
+    continue_on_ocr_error: bool,
+) -> SourceManifest:
     logger.info("Ingest source: %s (%s)", manifest.title, manifest.source_id)
-    paths = source_subdirs(config.data_dir, manifest.source_id)
+    paths = source_root_subdirs(Path(manifest.data_dir))
     original = Path(manifest.original_path)
     if original.is_dir():
         pages = _extract_images(original, manifest, ocr, config, logger, continue_on_ocr_error)
@@ -138,6 +239,89 @@ def extract_source(
     return manifest
 
 
+def _publish_staged_source(
+    manifest: SourceManifest,
+    live_root: Path,
+    data_dir: Path,
+    identity_key: str,
+    owner_id: str,
+    duplicate_policy: str,
+) -> SourceManifest:
+    staged_root = Path(manifest.data_dir)
+    for path in (staged_root / "metadata").glob("page_*.json"):
+        payload = json.loads(path.read_text())
+        for field in ["image_path", "markdown_path"]:
+            value = payload.get(field)
+            if value:
+                payload[field] = str(live_root / Path(value).relative_to(staged_root))
+        path.write_text(json.dumps(payload, indent=2))
+    manifest.original_path = str(live_root / Path(manifest.original_path).relative_to(staged_root))
+    manifest.data_dir = str(live_root)
+    manifest_path(staged_root).write_text(manifest.model_dump_json(indent=2))
+    with source_registry_lock(data_dir):
+        if duplicate_policy == "reject" and not identity_reservation_owned(
+            data_dir, identity_key, owner_id
+        ):
+            raise RuntimeError(f"Source identity reservation was lost: {identity_key}")
+        try:
+            duplicate = find_source(data_dir, manifest.source_id) if live_root.exists() else None
+        except (FileNotFoundError, ValueError):
+            duplicate = None
+        if duplicate is not None and (
+            duplicate.identity_key != identity_key
+            or duplicate.content_sha256 != manifest.content_sha256
+        ):
+            raise ValueError(
+                f"Source id already exists with different content: {manifest.source_id}"
+            )
+        backup = live_root.with_name(f".{live_root.name}.backup.{uuid4().hex}")
+        if live_root.exists():
+            live_root.replace(backup)
+        live_root.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            staged_root.replace(live_root)
+        except Exception:
+            if backup.exists() and not live_root.exists():
+                backup.replace(live_root)
+            raise
+        else:
+            shutil.rmtree(backup, ignore_errors=True)
+    return manifest
+
+
+def _recover_source_publication(live_root: Path) -> None:
+    backups = sorted(live_root.parent.glob(f".{live_root.name}.backup.*"))
+    if live_root.exists():
+        for backup in backups:
+            shutil.rmtree(backup, ignore_errors=True)
+        return
+    if backups:
+        backups[-1].replace(live_root)
+        for backup in backups[:-1]:
+            shutil.rmtree(backup, ignore_errors=True)
+
+
+def _start_identity_heartbeat(
+    config: AppConfig,
+    identity_key: str,
+    owner_id: str,
+    *,
+    enabled: bool,
+) -> tuple[threading.Event | None, threading.Thread | None]:
+    if not enabled:
+        return None, None
+    stop = threading.Event()
+
+    def refresh() -> None:
+        while not stop.wait(config.server.identity_reservation_heartbeat_seconds):
+            if not refresh_source_identity_reservation(config.data_dir, identity_key, owner_id):
+                return
+
+    thread = threading.Thread(target=refresh, name="scribebase-identity-heartbeat", daemon=True)
+    thread.start()
+    return stop, thread
+
+
 def _extract_pdf(
     pdf_path: Path,
     manifest: SourceManifest,
@@ -146,7 +330,7 @@ def _extract_pdf(
     logger,
     continue_on_ocr_error: bool,
 ) -> list[PageMetadata]:
-    paths = source_subdirs(config.data_dir, manifest.source_id)
+    paths = source_root_subdirs(Path(manifest.data_dir))
     provider: ShellOCRProvider | None = None
     pages: list[PageMetadata] = []
     routes = _pdf_page_routes(pdf_path, config)
@@ -280,7 +464,7 @@ def _extract_images(
 ) -> list[PageMetadata]:
     if ocr == "never":
         raise RuntimeError("Image inputs require OCR; remove --ocr never")
-    paths = source_subdirs(config.data_dir, manifest.source_id)
+    paths = source_root_subdirs(Path(manifest.data_dir))
     provider = _ocr_provider(ocr, config)
     image_paths = _image_files(image_input)
     pages: list[PageMetadata] = []
@@ -314,7 +498,7 @@ def _extract_text_document(
     logger,
     input_type: Literal["markdown", "text"],
 ) -> list[PageMetadata]:
-    paths = source_subdirs(config.data_dir, manifest.source_id)
+    paths = source_root_subdirs(Path(manifest.data_dir))
     method: Literal["markdown", "text"] = input_type
     logger.info("Document: using %s extraction", method)
     if input_type == "markdown":

@@ -37,6 +37,19 @@ Recommended:
   `company-research`.
 - `summary`: short source-level summary when available.
 
+## Stable identity and duplicates
+
+ScribeBase identifies a submission in this order:
+
+1. `external_id` together with `origin`;
+2. `canonical_url`, falling back to `url`;
+3. SHA-256 of the submitted content.
+
+The default `duplicate_policy` is `reject`. A duplicate request returns HTTP
+`409` with the existing `source_id` and `identity_key`; automation should treat
+that as an already-ingested result rather than retrying indefinitely. Set
+`"duplicate_policy": "create"` only when a separate copy is intentional.
+
 ## JSON example
 
 ```bash

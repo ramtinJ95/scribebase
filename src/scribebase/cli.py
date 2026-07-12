@@ -27,7 +27,7 @@ from scribebase.paths import ensure_data_layout
 from scribebase.paths import chapter_file_name
 from scribebase.retrieval.context_pack import build_context_pack, save_context_pack
 from scribebase.retrieval.search import format_search_results, search_chunks
-from scribebase.source_registry import find_source, list_manifests
+from scribebase.source_registry import backfill_source_identities, find_source, list_manifests
 from scribebase.server_jobs import run_worker
 
 app = typer.Typer(help="Local OCR → Markdown → Weaviate RAG app.")
@@ -165,6 +165,7 @@ def extract(
     collection: Optional[str] = None,
     summary: Optional[str] = None,
     ocr: str = typer.Option("auto"),
+    duplicate_policy: str = typer.Option("reject", help="reject or create"),
     continue_on_ocr_error: bool = False,
 ) -> None:
     try:
@@ -192,6 +193,7 @@ def extract(
             external_id=external_id,
             collection=collection,
             summary=summary,
+            duplicate_policy=duplicate_policy,
         )
         typer.echo(f"Extracted source_id={manifest.source_id}")
     except Exception as exc:
@@ -232,6 +234,7 @@ def ingest(
     collection: Optional[str] = None,
     summary: Optional[str] = None,
     ocr: str = typer.Option("auto"),
+    duplicate_policy: str = typer.Option("reject", help="reject or create"),
     no_index: bool = typer.Option(False, help="Extract only; do not index into Weaviate."),
     continue_on_ocr_error: bool = False,
 ) -> None:
@@ -261,6 +264,7 @@ def ingest(
             external_id=external_id,
             collection=collection,
             summary=summary,
+            duplicate_policy=duplicate_policy,
         )
         if not no_index:
             index_source(manifest.source_id, config, logger)
@@ -474,6 +478,13 @@ def sources_list() -> None:
 def sources_show(source_id: str) -> None:
     config = _config()
     typer.echo(find_source(config.data_dir, source_id).model_dump_json(indent=2))
+
+
+@sources_app.command("backfill-identities")
+def sources_backfill_identities() -> None:
+    config = _config()
+    count = backfill_source_identities(config.data_dir)
+    typer.echo(f"Backfilled identity metadata for {count} sources")
 
 
 @chunks_app.command("list")

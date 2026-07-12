@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 
@@ -21,11 +22,13 @@ from scribebase.server_jobs import (
     read_job,
     reconcile_queue_storage,
     recover_interrupted_jobs,
+    retry_job,
     run_ingest_job,
     run_worker,
     write_job,
 )
 from scribebase.source_registry import list_manifests, write_manifest
+from scribebase.source_registry import identity_reservation_owned
 
 
 def _claim(config, job):  # noqa: ANN001, ANN202
@@ -409,6 +412,7 @@ def test_recovery_reuses_preassigned_source_after_extraction_crash(tmp_path) -> 
         config,
         setup_logging(tmp_path),
         source_id=job.source_id,
+        identity_owner=job.job_id,
     )
     job.status = "running"
     job.phase = "extracting"
@@ -556,3 +560,38 @@ def test_queue_reconciliation_removes_expired_failed_upload(tmp_path) -> None:
     reconcile_queue_storage(config)
 
     assert not Path(job.upload_path).exists()
+
+
+def test_losing_concurrent_retry_keeps_winner_identity_reservation(tmp_path) -> None:
+    config = default_config()
+    config.data_dir = tmp_path
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        BytesIO(b"note"),
+        "Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        False,
+        False,
+    )
+    job.status = "failed"
+    write_job(tmp_path, job)
+    from scribebase.source_registry import release_source_identity
+
+    release_source_identity(tmp_path, job.identity_key or "", job.job_id)
+
+    def retry():  # noqa: ANN202
+        try:
+            return retry_job(config, job.job_id).status
+        except ValueError:
+            return "lost"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: retry(), range(2)))
+
+    assert sorted(results) == ["lost", "queued"]
+    assert identity_reservation_owned(tmp_path, job.identity_key or "", job.job_id)

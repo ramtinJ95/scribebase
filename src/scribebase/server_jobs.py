@@ -27,7 +27,15 @@ from scribebase.models import (
     normalize_tags,
 )
 from scribebase.paths import ensure_data_layout
-from scribebase.source_registry import find_source, slugify
+from scribebase.source_registry import (
+    DuplicateSourceError,
+    find_source,
+    prepare_source_identity,
+    reconcile_source_identity_reservations,
+    release_source_identity,
+    reserve_source_identity,
+    slugify,
+)
 
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
 JobPhase = Literal["queued", "extracting", "extracted", "indexing", "completed"]
@@ -81,6 +89,9 @@ class IngestJob(GenericMetadata):
     attempts: int = 0
     claim_token: str | None = None
     worker_id: str | None = None
+    duplicate_policy: Literal["reject", "create"] = "reject"
+    identity_key: str | None = None
+    content_sha256: str | None = None
 
 
 class IngestJobResponse(GenericMetadata):
@@ -103,6 +114,9 @@ class IngestJobResponse(GenericMetadata):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     attempts: int = 0
+    duplicate_policy: Literal["reject", "create"] = "reject"
+    identity_key: str | None = None
+    content_sha256: str | None = None
 
 
 def public_job(job: IngestJob) -> IngestJobResponse:
@@ -134,6 +148,7 @@ def create_ingest_job(
     collection: str | None = None,
     summary: str | None = None,
     expected_size: int | None = None,
+    duplicate_policy: Literal["reject", "create"] = "reject",
 ) -> IngestJob:
     ensure_data_layout(config.data_dir)
     job_id = uuid4().hex
@@ -167,6 +182,29 @@ def create_ingest_job(
 
         now = _now()
         planned_source_id = f"{slugify(title)}_{now.year}_{job_id[:6]}"
+        identity_key, content_sha256 = prepare_source_identity(
+            config.data_dir,
+            upload_path,
+            origin=_resolve_field(origin, frontmatter.origin),
+            canonical_url=_resolve_field(canonical_url, frontmatter.canonical_url),
+            url=_resolve_field(url, frontmatter.url),
+            external_id=_resolve_field(external_id, frontmatter.external_id),
+            source_id=planned_source_id,
+            duplicate_policy=duplicate_policy,
+        )
+        for existing in list_jobs(config.data_dir):
+            if existing.identity_key == identity_key and not _job_blocks_duplicate(
+                config.data_dir, existing
+            ):
+                release_source_identity(config.data_dir, identity_key, existing.job_id)
+        reserve_source_identity(
+            config.data_dir,
+            identity_key,
+            owner_id=job_id,
+            source_id=planned_source_id,
+            duplicate_policy=duplicate_policy,
+            owner_type="job",
+        )
         job = IngestJob(
             job_id=job_id,
             status="queued",
@@ -194,17 +232,35 @@ def create_ingest_job(
             no_index=no_index,
             continue_on_ocr_error=continue_on_ocr_error,
             source_id=planned_source_id,
+            duplicate_policy=duplicate_policy,
+            identity_key=identity_key,
+            content_sha256=content_sha256,
             created_at=now,
             updated_at=now,
         )
         with _queue_lock(config.data_dir):
             _validate_upload_storage(config)
+            if duplicate_policy == "reject":
+                duplicate_job = next(
+                    (
+                        existing
+                        for existing in list_jobs(config.data_dir)
+                        if existing.identity_key == identity_key
+                        and existing.source_id != planned_source_id
+                        and _job_blocks_duplicate(config.data_dir, existing)
+                    ),
+                    None,
+                )
+                if duplicate_job is not None:
+                    raise DuplicateSourceError(duplicate_job.source_id or "unknown", identity_key)
             write_job(config.data_dir, job)
             _release_reservation_unlocked(config.data_dir, job_id)
         return job
     except Exception:
         upload_path.unlink(missing_ok=True)
         _release_reservation(config.data_dir, job_id)
+        if "identity_key" in locals():
+            release_source_identity(config.data_dir, identity_key, job_id)
         raise
 
 
@@ -245,6 +301,8 @@ def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
                 collection=job.collection,
                 summary=job.summary,
                 source_id=job.source_id,
+                duplicate_policy=job.duplicate_policy,
+                identity_owner=job.job_id,
             )
             if manifest.source_id != job.source_id:
                 raise RuntimeError(
@@ -287,6 +345,8 @@ def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
                 persisted = True
         if persisted and job.status == "succeeded":
             Path(job.upload_path).unlink(missing_ok=True)
+        elif persisted and job.status == "failed" and job.identity_key:
+            release_source_identity(config.data_dir, job.identity_key, job.job_id)
 
 
 def list_jobs(data_dir: Path) -> list[IngestJob]:
@@ -340,27 +400,45 @@ def claim_next_job(data_dir: Path, worker_id: str) -> IngestJob | None:
 
 
 def retry_job(config: AppConfig, job_id: str) -> IngestJob:
-    with _queue_lock(config.data_dir):
-        job = read_job(config.data_dir, job_id)
-        if job.status != "failed":
-            raise ValueError(f"Only failed jobs can be retried: {job_id}")
-        if not Path(job.upload_path).exists() and job.phase in {"queued", "extracting"}:
-            raise FileNotFoundError(f"Upload is no longer available for retry: {job_id}")
-        active = sum(
-            1 for existing in list_jobs(config.data_dir) if existing.status in {"queued", "running"}
+    job = read_job(config.data_dir, job_id)
+    reservation_created = False
+    if job.identity_key and job.source_id:
+        reservation_created = reserve_source_identity(
+            config.data_dir,
+            job.identity_key,
+            owner_id=job.job_id,
+            source_id=job.source_id,
+            duplicate_policy=job.duplicate_policy,
+            owner_type="job",
         )
-        if active >= config.server.max_active_jobs:
-            raise QueueFullError(
-                f"Ingestion queue is full ({active}/{config.server.max_active_jobs})"
+    try:
+        with _queue_lock(config.data_dir):
+            job = read_job(config.data_dir, job_id)
+            if job.status != "failed":
+                raise ValueError(f"Only failed jobs can be retried: {job_id}")
+            if not Path(job.upload_path).exists() and job.phase in {"queued", "extracting"}:
+                raise FileNotFoundError(f"Upload is no longer available for retry: {job_id}")
+            active = sum(
+                1
+                for existing in list_jobs(config.data_dir)
+                if existing.status in {"queued", "running"}
             )
-        job.status = "queued"
-        job.error = None
-        job.finished_at = None
-        job.claim_token = None
-        job.worker_id = None
-        job.updated_at = _now()
-        write_job(config.data_dir, job)
-        return job
+            if active >= config.server.max_active_jobs:
+                raise QueueFullError(
+                    f"Ingestion queue is full ({active}/{config.server.max_active_jobs})"
+                )
+            job.status = "queued"
+            job.error = None
+            job.finished_at = None
+            job.claim_token = None
+            job.worker_id = None
+            job.updated_at = _now()
+            write_job(config.data_dir, job)
+            return job
+    except Exception:
+        if job.identity_key and reservation_created:
+            release_source_identity(config.data_dir, job.identity_key, job.job_id)
+        raise
 
 
 def run_worker(config: AppConfig, once: bool = False, poll_seconds: float | None = None) -> None:
@@ -371,7 +449,11 @@ def run_worker(config: AppConfig, once: bool = False, poll_seconds: float | None
         with _worker_heartbeat(config, worker_id):
             reconcile_queue_storage(config)
             recover_interrupted_jobs(config.data_dir)
+            last_reconcile = time.monotonic()
             while True:
+                if time.monotonic() - last_reconcile >= 60:
+                    reconcile_queue_storage(config)
+                    last_reconcile = time.monotonic()
                 job = claim_next_job(config.data_dir, worker_id)
                 if job is not None:
                     run_ingest_job(job.job_id, job.claim_token or "", config)
@@ -468,6 +550,18 @@ def _persist_claimed_job(data_dir: Path, job: IngestJob, claim_token: str) -> No
         write_job(data_dir, job)
 
 
+def _job_blocks_duplicate(data_dir: Path, job: IngestJob) -> bool:
+    if job.status in {"queued", "running"}:
+        return True
+    if job.status != "succeeded" or not job.source_id:
+        return False
+    try:
+        find_source(data_dir, job.source_id)
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def _reservation_dir(data_dir: Path) -> Path:
     return data_dir / "jobs" / "reservations"
 
@@ -525,12 +619,14 @@ def _upload_bytes(data_dir: Path) -> int:
 
 def reconcile_queue_storage(config: AppConfig) -> None:
     now = time.time()
+    active_job_ids: set[str] = set()
     with _queue_lock(config.data_dir):
         reservations = list(_reservation_dir(config.data_dir).glob("*.json"))
         for path in reservations:
             if now - path.stat().st_mtime > config.server.upload_reservation_timeout_seconds:
                 path.unlink(missing_ok=True)
         jobs = list_jobs(config.data_dir)
+        active_job_ids = {job.job_id for job in jobs if job.status in {"queued", "running"}}
         referenced = {Path(job.upload_path).resolve() for job in jobs}
         for job in jobs:
             upload = Path(job.upload_path)
@@ -547,6 +643,12 @@ def reconcile_queue_storage(config: AppConfig) -> None:
                 continue
             if now - upload.stat().st_mtime >= config.server.failed_upload_retention_seconds:
                 upload.unlink(missing_ok=True)
+    reconcile_source_identity_reservations(
+        config.data_dir,
+        active_job_ids,
+        orphan_job_seconds=config.server.identity_orphan_job_seconds,
+        direct_seconds=config.server.identity_direct_reservation_seconds,
+    )
 
 
 @contextmanager

@@ -114,3 +114,7 @@ curl -s "$SCRIBEBASE_URL/jobs/JOB_ID" \
 - `running`: extraction and/or indexing is in progress.
 - `succeeded`: ingestion completed; use `source_id` for future retrieval.
 - `failed`: ingestion failed; show `error` and suggest checking Mac mini logs.
+
+HTTP `409` means ScribeBase found the same external ID/origin, canonical URL,
+or content hash. Report the existing `source_id`; do not retry unless the user
+explicitly requests a separate copy with `duplicate_policy=create`.
