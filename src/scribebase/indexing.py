@@ -14,6 +14,7 @@ from scribebase.config import AppConfig
 from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
 from scribebase.extraction import read_page_metadata
 from scribebase.models import Chunk, SourceManifest
+from scribebase.paths import chapter_file_name
 from scribebase.source_registry import find_source, read_jsonl, write_jsonl, write_manifest
 from scribebase.vectorstores.weaviate_store import CollectionAliasMigrationError, WeaviateStore
 
@@ -22,7 +23,7 @@ def chunk_source(manifest: SourceManifest, config: AppConfig) -> list[Chunk]:
     root = Path(manifest.data_dir)
     markdown_path = root / "markdown" / "document.md"
     if manifest.chapter:
-        chapter_path = root / "markdown" / "chapters" / _chapter_file_name(manifest.chapter)
+        chapter_path = root / "markdown" / "chapters" / chapter_file_name(manifest.chapter)
         if chapter_path.exists():
             markdown_path = chapter_path
     if not markdown_path.exists():
@@ -281,12 +282,6 @@ def _validate_embedding_consistency(
                 f"configured model produced {dimension}, but {manifest.source_id} stores "
                 f"{summary.embedding_dimension}. Rebuild the index."
             )
-
-
-def _chapter_file_name(chapter: str) -> str:
-    from scribebase.paths import chapter_file_name
-
-    return chapter_file_name(chapter)
 
 
 def _write_chunks_atomic(path: Path, chunks: list[Chunk]) -> None:

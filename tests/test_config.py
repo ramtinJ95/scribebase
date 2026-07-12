@@ -29,7 +29,6 @@ def test_config_defaults_are_local_first() -> None:
     assert config.embedding.model == "Qwen3-Embedding-4B-Q4_K_M.gguf"
     assert config.embedding.batch_size == 8
     assert config.ocr.providers["apple_vision"].render_dpi == 200
-    assert not config.llm.enabled
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 8765
     assert config.server.api_token_env == API_TOKEN_ENV

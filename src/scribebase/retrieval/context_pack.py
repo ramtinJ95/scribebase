@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
-from pathlib import Path
-
 from scribebase.models import SearchResult
-from scribebase.source_registry import slugify
 
 
 def build_context_pack(question: str, results: list[SearchResult], task: str = "answer") -> str:
@@ -38,14 +34,6 @@ def build_context_pack(question: str, results: list[SearchResult], task: str = "
             ]
         )
     return "\n".join(lines).rstrip() + "\n"
-
-
-def save_context_pack(output_dir: Path, question: str, content: str) -> Path:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = output_dir / f"{stamp}_{slugify(question)[:60]}.md"
-    path.write_text(content)
-    return path
 
 
 def _pages(start: int | None, end: int | None) -> str:

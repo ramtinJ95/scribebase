@@ -77,16 +77,6 @@ class ChunkingConfig(BaseModel):
 class RetrievalConfig(BaseModel):
     alpha: float = 0.65
     top_k: int = 12
-    candidate_k: int = 30
-
-
-class LLMConfig(BaseModel):
-    enabled: bool = False
-    provider: str = "openai_compatible"
-    base_url: str = "https://api.openai.com/v1"
-    model: str = "gpt-5.5-pro"
-    api_key_env: str = "OPENAI_API_KEY"
-    temperature: float = 0.2
 
 
 class ServerConfig(BaseModel):
@@ -126,7 +116,6 @@ class AppConfig(BaseModel):
     ocr: OCRConfig = Field(default_factory=OCRConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
-    llm: LLMConfig = Field(default_factory=LLMConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
 
     @property
