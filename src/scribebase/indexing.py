@@ -37,6 +37,7 @@ def index_source(
     logger,
     no_create_collection: bool = False,
     allow_existing_model_mismatch: bool = False,
+    operation_id: str | None = None,
 ) -> SourceManifest:
     with _index_lock(config.data_dir):
         return _index_source(
@@ -45,6 +46,7 @@ def index_source(
             logger,
             no_create_collection=no_create_collection,
             allow_existing_model_mismatch=allow_existing_model_mismatch,
+            operation_id=operation_id,
         )
 
 
@@ -57,6 +59,7 @@ def _index_source(
     collection_name: str | None = None,
     write_manifest_summary: bool = True,
     chunks_output_path: Path | None = None,
+    operation_id: str | None = None,
 ) -> SourceManifest:
     manifest = find_source(config.data_dir, source_id)
     chunks = chunk_source(manifest, config)
@@ -130,7 +133,7 @@ def _index_source(
 
     _write_chunks_atomic(chunks_path, chunks)
 
-    _set_embedding_summary(manifest, config, dimension)
+    _set_embedding_summary(manifest, config, dimension, operation_id)
     if write_manifest_summary:
         write_manifest(manifest)
     logger.info(
@@ -411,10 +414,12 @@ def _set_embedding_summary(
     manifest: SourceManifest,
     config: AppConfig,
     dimension: int | None,
+    operation_id: str | None,
 ) -> None:
     manifest.embedding_summary.embedding_model = config.embedding.model
     manifest.embedding_summary.embedding_dimension = dimension
     manifest.embedding_summary.embedding_base_url = config.embedding.base_url
     manifest.embedding_summary.indexed_in_weaviate = True
     manifest.embedding_summary.weaviate_collection = config.weaviate.collection
+    manifest.embedding_summary.index_operation_id = operation_id
     manifest.updated_at = datetime.now(timezone.utc)

@@ -28,6 +28,7 @@ from scribebase.paths import chapter_file_name
 from scribebase.retrieval.context_pack import build_context_pack, save_context_pack
 from scribebase.retrieval.search import format_search_results, search_chunks
 from scribebase.source_registry import find_source, list_manifests
+from scribebase.server_jobs import run_worker
 
 app = typer.Typer(help="Local OCR → Markdown → Weaviate RAG app.")
 sources_app = typer.Typer(help="List and inspect sources.")
@@ -40,7 +41,9 @@ def _fail(exc: Exception) -> None:
     message = str(exc).strip() or exc.__class__.__name__
     typer.echo(f"[ERROR] {message}", err=True)
     if "Weaviate" in message or "Connection refused" in message:
-        typer.echo("Start Weaviate with: docker compose -f docker-compose.weaviate.yml up -d", err=True)
+        typer.echo(
+            "Start Weaviate with: docker compose -f docker-compose.weaviate.yml up -d", err=True
+        )
     if "embedding" in message.lower() or "localhost:8080" in message:
         typer.echo(
             "Start llama.cpp embeddings, e.g.: "
@@ -191,6 +194,19 @@ def extract(
             summary=summary,
         )
         typer.echo(f"Extracted source_id={manifest.source_id}")
+    except Exception as exc:
+        _fail(exc)
+
+
+@app.command()
+def worker(
+    once: bool = typer.Option(False, help="Process at most one queued job."),
+    poll_seconds: Optional[float] = typer.Option(None, min=0.1, help="Queue polling interval."),
+) -> None:
+    """Run the durable ingestion queue worker."""
+    try:
+        config = _config()
+        run_worker(config, once=once, poll_seconds=poll_seconds)
     except Exception as exc:
         _fail(exc)
 
@@ -437,7 +453,9 @@ def quiz(
             typer.echo(f"LLM disabled or API key missing. Quiz prompt saved: {path}")
             return
         quiz_md = client.complete(QUIZ_SYSTEM_PROMPT, pack)
-        path = save_markdown(config.data_dir / "outputs" / "quizzes", title or source_id or "quiz", quiz_md)
+        path = save_markdown(
+            config.data_dir / "outputs" / "quizzes", title or source_id or "quiz", quiz_md
+        )
         typer.echo(f"Quiz saved: {path}")
     except Exception as exc:
         _fail(exc)
@@ -447,7 +465,9 @@ def quiz(
 def sources_list() -> None:
     config = _config()
     for manifest in list_manifests(config.data_dir):
-        typer.echo(f"{manifest.source_id}\t{manifest.title}\t{manifest.source_type}\t{manifest.chapter or ''}")
+        typer.echo(
+            f"{manifest.source_id}\t{manifest.title}\t{manifest.source_type}\t{manifest.chapter or ''}"
+        )
 
 
 @sources_app.command("show")
@@ -602,7 +622,11 @@ def _ocr_doctor_message(command: str | None) -> tuple[bool, str]:
     if not command:
         return False, "no command configured"
     try:
-        parts = shlex.split(command.format(input_image="x", output_md="y", output_json="z", page_number=1, source_id="s"))
+        parts = shlex.split(
+            command.format(
+                input_image="x", output_md="y", output_json="z", page_number=1, source_id="s"
+            )
+        )
     except Exception as exc:
         return False, f"invalid command template: {exc}"
     for part in parts[1:]:

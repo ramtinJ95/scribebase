@@ -179,6 +179,7 @@ Authorization: Bearer $SCRIBEBASE_API_TOKEN
 Template plists live in `docs/launchd/`:
 
 - `com.scribebase.server.plist.example`
+- `com.scribebase.worker.plist.example`
 - `com.scribebase.embedding.plist.example`
 
 Copy each template to `~/Library/LaunchAgents/`, remove `.example`, and edit:
@@ -189,11 +190,16 @@ Copy each template to `~/Library/LaunchAgents/`, remove `.example`, and edit:
 - model path
 - log paths
 
+Run `scribebase init` first so the configured data and log directories exist.
+The source/data directory must be a local filesystem; the worker's advisory
+lock does not support multiple hosts sharing one queue over NFS or SMB.
+
 Then load them:
 
 ```bash
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.embedding.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.server.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.worker.plist
 ```
 
 Restart after edits:
@@ -201,6 +207,8 @@ Restart after edits:
 ```bash
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.server.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.server.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.worker.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.worker.plist
 ```
 
 Inspect logs:
@@ -208,6 +216,7 @@ Inspect logs:
 ```bash
 tail -f /Users/ramtin/scribebase-data/logs/scribebase-server.out.log
 tail -f /Users/ramtin/scribebase-data/logs/scribebase-server.err.log
+tail -f /Users/ramtin/scribebase-data/logs/scribebase-worker.err.log
 ```
 
 ## 8. Remote smoke tests
