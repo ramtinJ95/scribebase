@@ -5,8 +5,9 @@ from datetime import datetime
 from io import BytesIO
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from scribebase.config import AppConfig, load_config, read_api_token
@@ -30,7 +31,8 @@ from scribebase.server_jobs import (
     create_ingest_job,
     public_job,
     read_job,
-    worker_is_running,
+    retry_job,
+    worker_status,
 )
 from scribebase.source_registry import list_manifests, slugify
 from scribebase.vectorstores.weaviate_store import WeaviateStore
@@ -100,6 +102,18 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
     )
     app.state.config = config
     app.state.api_token = api_token
+
+    @app.middleware("http")
+    async def reject_known_oversized_requests(request: Request, call_next):  # noqa: ANN001, ANN202
+        if request.url.path in {"/ingest", "/articles"}:
+            content_length = request.headers.get("content-length")
+            request_limit = config.server.max_upload_bytes + 1024 * 1024
+            if content_length and int(content_length) > request_limit:
+                return JSONResponse(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    content={"detail": f"Request exceeds {request_limit} bytes"},
+                )
+        return await call_next(request)
 
     require_auth = _auth_dependency(api_token)
 
@@ -204,6 +218,7 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
                 external_id=external_id,
                 collection=collection,
                 summary=summary,
+                expected_size=file.size,
             )
         except UploadTooLargeError as exc:
             raise HTTPException(
@@ -255,6 +270,7 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
                 external_id=request.external_id,
                 collection=request.collection,
                 summary=request.summary,
+                expected_size=len(request.body.encode("utf-8")),
             )
         except UploadTooLargeError as exc:
             raise HTTPException(
@@ -278,6 +294,23 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    @app.post(
+        "/jobs/{job_id}/retry",
+        response_model=IngestJobResponse,
+        dependencies=[Depends(require_auth)],
+    )
+    def retry_failed_job(job_id: str) -> IngestJobResponse:
+        try:
+            return public_job(retry_job(config, job_id))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except QueueFullError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     return app
 
@@ -318,8 +351,5 @@ def _embedding_health(config: AppConfig) -> ServiceHealth:
 
 
 def _worker_health(config: AppConfig) -> ServiceHealth:
-    running = worker_is_running(config.data_dir)
-    return ServiceHealth(
-        ok=running,
-        message="worker lock held" if running else "worker is not running",
-    )
+    ok, message = worker_status(config)
+    return ServiceHealth(ok=ok, message=message)

@@ -59,6 +59,7 @@ def extract_source(
     external_id: str | None = None,
     collection: str | None = None,
     summary: str | None = None,
+    source_id: str | None = None,
 ) -> SourceManifest:
     input_path = input_path.expanduser().resolve()
     if not input_path.exists():
@@ -91,6 +92,7 @@ def extract_source(
         external_id=_resolve_field(external_id, frontmatter.external_id),
         collection=_resolve_field(collection, frontmatter.collection),
         summary=_resolve_field(summary, frontmatter.summary),
+        source_id=source_id,
     )
     logger.info("Ingest source: %s (%s)", manifest.title, manifest.source_id)
     paths = source_subdirs(config.data_dir, manifest.source_id)
@@ -108,7 +110,9 @@ def extract_source(
     else:
         raise ValueError(f"Unsupported input type: {original}")
 
-    page_markdowns = [Path(page.markdown_path).read_text() for page in pages if Path(page.markdown_path).exists()]
+    page_markdowns = [
+        Path(page.markdown_path).read_text() for page in pages if Path(page.markdown_path).exists()
+    ]
     document_path = paths["markdown"] / "document.md"
     document_path.write_text(combine_pages(page_markdowns))
     if chapter:
@@ -119,14 +123,18 @@ def extract_source(
     manifest.extraction_summary.pages_extracted_with_pymupdf4llm = sum(
         1 for page in pages if page.extraction_method in {"pymupdf4llm", "pymupdf"}
     )
-    manifest.extraction_summary.pages_ocr = sum(1 for page in pages if page.extraction_method == "ocr")
+    manifest.extraction_summary.pages_ocr = sum(
+        1 for page in pages if page.extraction_method == "ocr"
+    )
     manifest.extraction_summary.ocr_provider = config.ocr.default_provider
     provider_cfg = config.ocr.providers.get(config.ocr.default_provider)
     manifest.extraction_summary.ocr_model = provider_cfg.model_name if provider_cfg else None
     manifest.updated_at = datetime.now(timezone.utc)
     write_manifest(manifest)
     if not document_path.read_text().strip():
-        raise RuntimeError("Empty extraction. Try --ocr always or check OCR provider configuration.")
+        raise RuntimeError(
+            "Empty extraction. Try --ocr always or check OCR provider configuration."
+        )
     return manifest
 
 

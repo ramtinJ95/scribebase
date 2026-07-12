@@ -95,7 +95,12 @@ class ServerConfig(BaseModel):
     api_token_env: str = API_TOKEN_ENV
     max_upload_bytes: int = Field(default=250 * 1024 * 1024, gt=0)
     max_active_jobs: int = Field(default=20, gt=0)
+    max_upload_storage_bytes: int = Field(default=1024 * 1024 * 1024, gt=0)
     worker_poll_seconds: float = Field(default=2.0, gt=0)
+    worker_heartbeat_seconds: float = Field(default=2.0, gt=0)
+    worker_stale_seconds: float = Field(default=15.0, gt=0)
+    upload_reservation_timeout_seconds: int = Field(default=60 * 60, gt=0)
+    failed_upload_retention_seconds: int = Field(default=7 * 24 * 60 * 60, ge=0)
 
 
 class AppConfig(BaseModel):

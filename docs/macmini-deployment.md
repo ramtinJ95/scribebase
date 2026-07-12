@@ -190,6 +190,10 @@ Copy each template to `~/Library/LaunchAgents/`, remove `.example`, and edit:
 - model path
 - log paths
 
+Run `scribebase init` first so the configured data and log directories exist.
+The source/data directory must be a local filesystem; the worker's advisory
+lock does not support multiple hosts sharing one queue over NFS or SMB.
+
 Then load them:
 
 ```bash

@@ -48,6 +48,7 @@ class EmbeddingSummary(BaseModel):
     embedding_base_url: str | None = None
     indexed_in_weaviate: bool = False
     weaviate_collection: str | None = None
+    index_operation_id: str | None = None
 
 
 class GenericMetadata(BaseModel):

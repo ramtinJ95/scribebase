@@ -378,7 +378,12 @@ server:
   api_token_env: "SCRIBEBASE_API_TOKEN"
   max_upload_bytes: 262144000
   max_active_jobs: 20
+  max_upload_storage_bytes: 1073741824
   worker_poll_seconds: 2.0
+  worker_heartbeat_seconds: 2.0
+  worker_stale_seconds: 15.0
+  upload_reservation_timeout_seconds: 3600
+  failed_upload_retention_seconds: 604800
 ```
 
 ### Environment overrides
@@ -425,7 +430,10 @@ Protected endpoints require `Authorization: Bearer $SCRIBEBASE_API_TOKEN`.
 Uploaded documents and articles remain `queued` until the separate worker
 claims them. Run exactly one worker per data directory; interrupted `running`
 jobs are returned to the queue when the worker starts. Upload size, active queue
-capacity, and polling interval are configured under `server` in `config.yaml`.
+capacity, total upload storage, retention, and polling are configured under
+`server` in `config.yaml`. Failed jobs retain uploads for seven days by default
+and can be requeued with `POST /jobs/{job_id}/retry`. Use a local data directory;
+shared NFS/SMB queues and multiple-host workers are unsupported.
 
 Example search:
 

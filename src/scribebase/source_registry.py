@@ -80,9 +80,10 @@ def create_manifest(
     external_id: str | None = None,
     collection: str | None = None,
     summary: str | None = None,
+    source_id: str | None = None,
 ) -> SourceManifest:
     now = datetime.now(timezone.utc)
-    source_id = generate_source_id(title, now)
+    source_id = source_id or generate_source_id(title, now)
     paths = source_subdirs(data_dir, source_id)
     original_path = copy_original(input_path, paths["original"])
     manifest = SourceManifest(

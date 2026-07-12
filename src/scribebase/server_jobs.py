@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-import re
 import fcntl
+import json
+import os
+import re
+import socket
+import threading
 import time
+import warnings
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,9 +27,10 @@ from scribebase.models import (
     normalize_tags,
 )
 from scribebase.paths import ensure_data_layout
-from scribebase.source_registry import find_source
+from scribebase.source_registry import find_source, slugify
 
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
+JobPhase = Literal["queued", "extracting", "extracted", "indexing", "completed"]
 MARKDOWN_EXTS = {".md", ".markdown"}
 SUPPORTED_UPLOAD_EXTS = MARKDOWN_EXTS | {
     ".pdf",
@@ -55,6 +61,7 @@ class UnsupportedUploadError(ValueError):
 class IngestJob(GenericMetadata):
     job_id: str
     status: JobStatus
+    phase: JobPhase = "queued"
     filename: str
     upload_path: str
     title: str
@@ -72,11 +79,14 @@ class IngestJob(GenericMetadata):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     attempts: int = 0
+    claim_token: str | None = None
+    worker_id: str | None = None
 
 
 class IngestJobResponse(GenericMetadata):
     job_id: str
     status: JobStatus
+    phase: JobPhase = "queued"
     filename: str
     title: str
     source_type: SourceType = "other"
@@ -123,6 +133,7 @@ def create_ingest_job(
     external_id: str | None = None,
     collection: str | None = None,
     summary: str | None = None,
+    expected_size: int | None = None,
 ) -> IngestJob:
     ensure_data_layout(config.data_dir)
     job_id = uuid4().hex
@@ -130,12 +141,18 @@ def create_ingest_job(
     suffix = Path(safe_name).suffix.lower()
     if suffix not in SUPPORTED_UPLOAD_EXTS:
         raise UnsupportedUploadError(f"Unsupported upload type: {suffix or 'no extension'}")
+    reserved_bytes = min(
+        expected_size or config.server.max_upload_bytes,
+        config.server.max_upload_bytes,
+    )
+    _reserve_upload(config, job_id, reserved_bytes)
     upload_path = config.data_dir / "uploads" / f"{job_id}_{safe_name}"
     upload_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         _copy_limited(fileobj, upload_path, config.server.max_upload_bytes)
     except Exception:
         upload_path.unlink(missing_ok=True)
+        _release_reservation(config.data_dir, job_id)
         raise
 
     try:
@@ -149,9 +166,11 @@ def create_ingest_job(
         language = _resolve_field(language, frontmatter.language) or "unknown"
 
         now = _now()
+        planned_source_id = f"{slugify(title)}_{now.year}_{job_id[:6]}"
         job = IngestJob(
             job_id=job_id,
             status="queued",
+            phase="queued",
             filename=safe_name,
             upload_path=str(upload_path),
             title=title,
@@ -174,41 +193,34 @@ def create_ingest_job(
             ocr=ocr,
             no_index=no_index,
             continue_on_ocr_error=continue_on_ocr_error,
+            source_id=planned_source_id,
             created_at=now,
             updated_at=now,
         )
         with _queue_lock(config.data_dir):
-            active = sum(
-                1
-                for existing in list_jobs(config.data_dir)
-                if existing.status in {"queued", "running"}
-            )
-            if active >= config.server.max_active_jobs:
-                raise QueueFullError(
-                    f"Ingestion queue is full ({active}/{config.server.max_active_jobs})"
-                )
+            _validate_upload_storage(config)
             write_job(config.data_dir, job)
+            _release_reservation_unlocked(config.data_dir, job_id)
         return job
     except Exception:
         upload_path.unlink(missing_ok=True)
+        _release_reservation(config.data_dir, job_id)
         raise
 
 
-def run_ingest_job(job_id: str, config: AppConfig) -> None:
-    job = read_job(config.data_dir, job_id)
+def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
+    with _queue_lock(config.data_dir):
+        job = read_job(config.data_dir, job_id)
+        if job.status in {"succeeded", "failed"}:
+            return
+        if job.status != "running" or job.claim_token != claim_token:
+            raise RuntimeError(f"Job claim is not owned by this worker: {job_id}")
     logger = setup_logging(config.data_dir)
-    if job.status != "running":
-        job.status = "running"
-        job.started_at = _now()
-        job.updated_at = job.started_at
-        job.error = None
-        job.attempts += 1
-        write_job(config.data_dir, job)
 
     try:
-        if job.source_id:
-            manifest = find_source(config.data_dir, job.source_id)
-        else:
+        if job.phase in {"queued", "extracting"}:
+            job.phase = "extracting"
+            _persist_claimed_job(config.data_dir, job, claim_token)
             manifest = extract_source(
                 Path(job.upload_path),
                 job.title,
@@ -232,12 +244,32 @@ def run_ingest_job(job_id: str, config: AppConfig) -> None:
                 external_id=job.external_id,
                 collection=job.collection,
                 summary=job.summary,
+                source_id=job.source_id,
             )
-            job.source_id = manifest.source_id
+            if manifest.source_id != job.source_id:
+                raise RuntimeError(
+                    f"Extractor returned unexpected source id {manifest.source_id!r}; "
+                    f"expected {job.source_id!r}"
+                )
+            job.phase = "extracted"
             job.updated_at = _now()
-            write_job(config.data_dir, job)
-        if not job.no_index:
-            index_source(manifest.source_id, config, logger)
+            _persist_claimed_job(config.data_dir, job, claim_token)
+        else:
+            manifest = find_source(config.data_dir, job.source_id or "")
+
+        if job.no_index:
+            job.phase = "completed"
+        elif job.phase in {"extracted", "indexing"}:
+            already_indexed = (
+                job.phase == "indexing"
+                and manifest.embedding_summary.index_operation_id == job.job_id
+            )
+            if not already_indexed:
+                job.phase = "indexing"
+                job.updated_at = _now()
+                _persist_claimed_job(config.data_dir, job, claim_token)
+                index_source(manifest.source_id, config, logger, operation_id=job.job_id)
+            job.phase = "completed"
         job.status = "succeeded"
     except Exception as exc:
         job.status = "failed"
@@ -245,8 +277,15 @@ def run_ingest_job(job_id: str, config: AppConfig) -> None:
     finally:
         job.finished_at = _now()
         job.updated_at = job.finished_at
-        write_job(config.data_dir, job)
-        if job.status == "succeeded":
+        job.claim_token = None
+        job.worker_id = None
+        persisted = False
+        with _queue_lock(config.data_dir):
+            current = read_job(config.data_dir, job.job_id)
+            if current.claim_token == claim_token:
+                write_job(config.data_dir, job)
+                persisted = True
+        if persisted and job.status == "succeeded":
             Path(job.upload_path).unlink(missing_ok=True)
 
 
@@ -254,10 +293,15 @@ def list_jobs(data_dir: Path) -> list[IngestJob]:
     jobs_dir = data_dir / "jobs"
     if not jobs_dir.exists():
         return []
-    return sorted(
-        (IngestJob.model_validate_json(path.read_text()) for path in jobs_dir.glob("*.json")),
-        key=lambda job: (job.created_at, job.job_id),
-    )
+    jobs = []
+    for path in jobs_dir.glob("*.json"):
+        try:
+            jobs.append(IngestJob.model_validate_json(path.read_text()))
+        except Exception as exc:
+            quarantine = path.with_suffix(f".corrupt.{int(time.time())}")
+            path.replace(quarantine)
+            warnings.warn(f"Quarantined corrupt job {path}: {exc}", stacklevel=2)
+    return sorted(jobs, key=lambda job: (job.created_at, job.job_id))
 
 
 def recover_interrupted_jobs(data_dir: Path) -> int:
@@ -270,12 +314,14 @@ def recover_interrupted_jobs(data_dir: Path) -> int:
             job.error = "Worker interrupted; queued for recovery"
             job.updated_at = _now()
             job.finished_at = None
+            job.claim_token = None
+            job.worker_id = None
             write_job(data_dir, job)
             recovered += 1
     return recovered
 
 
-def claim_next_job(data_dir: Path) -> IngestJob | None:
+def claim_next_job(data_dir: Path, worker_id: str) -> IngestJob | None:
     with _queue_lock(data_dir):
         job = next(
             (candidate for candidate in list_jobs(data_dir) if candidate.status == "queued"), None
@@ -287,25 +333,54 @@ def claim_next_job(data_dir: Path) -> IngestJob | None:
         job.updated_at = job.started_at
         job.error = None
         job.attempts += 1
+        job.claim_token = uuid4().hex
+        job.worker_id = worker_id
         write_job(data_dir, job)
+        return job
+
+
+def retry_job(config: AppConfig, job_id: str) -> IngestJob:
+    with _queue_lock(config.data_dir):
+        job = read_job(config.data_dir, job_id)
+        if job.status != "failed":
+            raise ValueError(f"Only failed jobs can be retried: {job_id}")
+        if not Path(job.upload_path).exists() and job.phase in {"queued", "extracting"}:
+            raise FileNotFoundError(f"Upload is no longer available for retry: {job_id}")
+        active = sum(
+            1 for existing in list_jobs(config.data_dir) if existing.status in {"queued", "running"}
+        )
+        if active >= config.server.max_active_jobs:
+            raise QueueFullError(
+                f"Ingestion queue is full ({active}/{config.server.max_active_jobs})"
+            )
+        job.status = "queued"
+        job.error = None
+        job.finished_at = None
+        job.claim_token = None
+        job.worker_id = None
+        job.updated_at = _now()
+        write_job(config.data_dir, job)
         return job
 
 
 def run_worker(config: AppConfig, once: bool = False, poll_seconds: float | None = None) -> None:
     ensure_data_layout(config.data_dir)
     delay = poll_seconds if poll_seconds is not None else config.server.worker_poll_seconds
+    worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:8]}"
     with _worker_lock(config.data_dir):
-        recover_interrupted_jobs(config.data_dir)
-        while True:
-            job = claim_next_job(config.data_dir)
-            if job is not None:
-                run_ingest_job(job.job_id, config)
+        with _worker_heartbeat(config, worker_id):
+            reconcile_queue_storage(config)
+            recover_interrupted_jobs(config.data_dir)
+            while True:
+                job = claim_next_job(config.data_dir, worker_id)
+                if job is not None:
+                    run_ingest_job(job.job_id, job.claim_token or "", config)
+                    if once:
+                        return
+                    continue
                 if once:
                     return
-                continue
-            if once:
-                return
-            time.sleep(delay)
+                time.sleep(delay)
 
 
 def read_job(data_dir: Path, job_id: str) -> IngestJob:
@@ -328,13 +403,7 @@ def _resolve_field(explicit: T | None, default: T | None) -> T | None:
 
 def write_job(data_dir: Path, job: IngestJob) -> Path:
     path = job_path(data_dir, job.job_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.{uuid4().hex}.tmp")
-    try:
-        temporary.write_text(job.model_dump_json(indent=2))
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    _write_text_atomic(path, job.model_dump_json(indent=2))
     return path
 
 
@@ -354,6 +423,21 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def worker_status(config: AppConfig) -> tuple[bool, str]:
+    if not worker_is_running(config.data_dir):
+        return False, "worker is not running"
+    path = _heartbeat_path(config.data_dir)
+    try:
+        payload = json.loads(path.read_text())
+        updated = datetime.fromisoformat(payload["updated_at"])
+        age = (_now() - updated).total_seconds()
+    except Exception as exc:
+        return False, f"worker heartbeat unavailable: {exc}"
+    if age > config.server.worker_stale_seconds:
+        return False, f"worker heartbeat stale ({age:.1f}s)"
+    return True, f"worker healthy ({payload['worker_id']}, heartbeat {age:.1f}s ago)"
+
+
 def worker_is_running(data_dir: Path) -> bool:
     path = data_dir / "jobs" / ".worker.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -369,11 +453,149 @@ def worker_is_running(data_dir: Path) -> bool:
 def _copy_limited(fileobj: BinaryIO, destination: Path, limit: int) -> None:
     written = 0
     with destination.open("wb") as output:
-        while data := fileobj.read(1024 * 1024):
+        while data := fileobj.read(min(1024 * 1024, limit - written + 1)):
             written += len(data)
             if written > limit:
                 raise UploadTooLargeError(f"Upload exceeds {limit} bytes")
             output.write(data)
+
+
+def _persist_claimed_job(data_dir: Path, job: IngestJob, claim_token: str) -> None:
+    with _queue_lock(data_dir):
+        current = read_job(data_dir, job.job_id)
+        if current.status != "running" or current.claim_token != claim_token:
+            raise RuntimeError(f"Job claim was lost: {job.job_id}")
+        write_job(data_dir, job)
+
+
+def _reservation_dir(data_dir: Path) -> Path:
+    return data_dir / "jobs" / "reservations"
+
+
+def _reserve_upload(config: AppConfig, job_id: str, reserved_bytes: int) -> None:
+    with _queue_lock(config.data_dir):
+        reservations = list(_reservation_dir(config.data_dir).glob("*.json"))
+        active = sum(
+            1 for job in list_jobs(config.data_dir) if job.status in {"queued", "running"}
+        ) + len(reservations)
+        if active >= config.server.max_active_jobs:
+            raise QueueFullError(
+                f"Ingestion queue is full ({active}/{config.server.max_active_jobs})"
+            )
+        used = _upload_bytes(config.data_dir) + sum(
+            int(json.loads(path.read_text())["reserved_bytes"]) for path in reservations
+        )
+        if used + reserved_bytes > config.server.max_upload_storage_bytes:
+            raise QueueFullError(
+                "Upload storage budget exceeded "
+                f"({used + reserved_bytes}/{config.server.max_upload_storage_bytes} bytes)"
+            )
+        path = _reservation_dir(config.data_dir) / f"{job_id}.json"
+        _write_text_atomic(
+            path,
+            json.dumps(
+                {
+                    "job_id": job_id,
+                    "reserved_bytes": reserved_bytes,
+                    "created_at": _now().isoformat(),
+                }
+            ),
+        )
+
+
+def _release_reservation(data_dir: Path, job_id: str) -> None:
+    with _queue_lock(data_dir):
+        _release_reservation_unlocked(data_dir, job_id)
+
+
+def _release_reservation_unlocked(data_dir: Path, job_id: str) -> None:
+    (_reservation_dir(data_dir) / f"{job_id}.json").unlink(missing_ok=True)
+
+
+def _validate_upload_storage(config: AppConfig) -> None:
+    if _upload_bytes(config.data_dir) > config.server.max_upload_storage_bytes:
+        raise QueueFullError(
+            f"Upload storage exceeds {config.server.max_upload_storage_bytes} bytes"
+        )
+
+
+def _upload_bytes(data_dir: Path) -> int:
+    return sum(path.stat().st_size for path in (data_dir / "uploads").glob("*") if path.is_file())
+
+
+def reconcile_queue_storage(config: AppConfig) -> None:
+    now = time.time()
+    with _queue_lock(config.data_dir):
+        reservations = list(_reservation_dir(config.data_dir).glob("*.json"))
+        for path in reservations:
+            if now - path.stat().st_mtime > config.server.upload_reservation_timeout_seconds:
+                path.unlink(missing_ok=True)
+        jobs = list_jobs(config.data_dir)
+        referenced = {Path(job.upload_path).resolve() for job in jobs}
+        for job in jobs:
+            upload = Path(job.upload_path)
+            if job.status == "succeeded":
+                upload.unlink(missing_ok=True)
+            elif job.status == "failed" and job.finished_at is not None:
+                age = (_now() - job.finished_at).total_seconds()
+                if age >= config.server.failed_upload_retention_seconds:
+                    upload.unlink(missing_ok=True)
+        reserved_ids = {path.stem for path in _reservation_dir(config.data_dir).glob("*.json")}
+        for upload in (config.data_dir / "uploads").glob("*"):
+            job_id = upload.name.split("_", 1)[0]
+            if upload.resolve() in referenced or job_id in reserved_ids:
+                continue
+            if now - upload.stat().st_mtime >= config.server.failed_upload_retention_seconds:
+                upload.unlink(missing_ok=True)
+
+
+@contextmanager
+def _worker_heartbeat(config: AppConfig, worker_id: str):  # noqa: ANN202
+    stop = threading.Event()
+    path = _heartbeat_path(config.data_dir)
+
+    def update() -> None:
+        while not stop.is_set():
+            _write_text_atomic(
+                path,
+                json.dumps({"worker_id": worker_id, "updated_at": _now().isoformat()}),
+            )
+            stop.wait(config.server.worker_heartbeat_seconds)
+
+    _write_text_atomic(
+        path,
+        json.dumps({"worker_id": worker_id, "updated_at": _now().isoformat()}),
+    )
+    thread = threading.Thread(target=update, name="scribebase-worker-heartbeat", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=config.server.worker_heartbeat_seconds + 1)
+        path.unlink(missing_ok=True)
+
+
+def _heartbeat_path(data_dir: Path) -> Path:
+    return data_dir / "jobs" / ".worker-heartbeat"
+
+
+def _write_text_atomic(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("w") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        temporary.replace(path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 @contextmanager

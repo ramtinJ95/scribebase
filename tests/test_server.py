@@ -9,7 +9,7 @@ from scribebase.models import Chunk, SearchResult, SourceManifest
 from scribebase.paths import ensure_data_layout
 from scribebase.source_registry import write_manifest
 from scribebase.server import ServiceHealth, create_app
-from scribebase.server_jobs import _worker_lock
+from scribebase.server_jobs import _worker_heartbeat, _worker_lock, read_job, write_job
 
 
 TOKEN = "test-token"
@@ -52,9 +52,11 @@ def test_health_reports_running_worker(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
 
     with _worker_lock(tmp_path):
-        response = client.get("/health")
+        with _worker_heartbeat(client.app.state.config, "test-worker"):
+            response = client.get("/health")
 
-    assert response.json()["worker"] == {"ok": True, "message": "worker lock held"}
+    assert response.json()["worker"]["ok"] is True
+    assert "test-worker" in response.json()["worker"]["message"]
 
 
 def test_sources_requires_bearer_auth(tmp_path, monkeypatch) -> None:
@@ -240,7 +242,7 @@ def test_ingest_upload_without_title_or_frontmatter_returns_400(tmp_path, monkey
     assert response.status_code == 400
     assert "title is required" in response.json()["detail"]
     assert list((tmp_path / "uploads").iterdir()) == []
-    assert list((tmp_path / "jobs").iterdir()) == []
+    assert not list((tmp_path / "jobs").glob("*.json"))
 
 
 def test_ingest_upload_rejects_oversized_file(tmp_path, monkeypatch) -> None:
@@ -372,7 +374,7 @@ def test_article_ingest_json_rejects_empty_body(tmp_path, monkeypatch) -> None:
     assert response.status_code == 400
     assert response.json()["detail"] == "body must not be empty"
     assert list((tmp_path / "uploads").iterdir()) == []
-    assert list((tmp_path / "jobs").iterdir()) == []
+    assert not list((tmp_path / "jobs").glob("*.json"))
 
 
 def test_article_ingest_json_without_title_or_frontmatter_returns_400(
@@ -389,7 +391,7 @@ def test_article_ingest_json_without_title_or_frontmatter_returns_400(
     assert response.status_code == 400
     assert "title is required" in response.json()["detail"]
     assert list((tmp_path / "uploads").iterdir()) == []
-    assert list((tmp_path / "jobs").iterdir()) == []
+    assert not list((tmp_path / "jobs").glob("*.json"))
 
 
 def test_job_status_returns_persisted_job(tmp_path, monkeypatch) -> None:
@@ -413,6 +415,40 @@ def test_missing_job_returns_404(tmp_path, monkeypatch) -> None:
     response = client.get("/jobs/missing", headers=_auth())
 
     assert response.status_code == 404
+
+
+def test_failed_job_can_be_retried(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    created = client.post(
+        "/ingest",
+        headers=_auth(),
+        data={"title": "Retry me"},
+        files={"file": ("notes.txt", b"note", "text/plain")},
+    ).json()
+    job = read_job(tmp_path, created["job_id"])
+    job.status = "failed"
+    job.error = "temporary failure"
+    job.finished_at = datetime.now(timezone.utc)
+    write_job(tmp_path, job)
+
+    response = client.post(f"/jobs/{job.job_id}/retry", headers=_auth())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "queued"
+    assert response.json()["error"] is None
+
+
+def test_known_oversized_request_is_rejected_before_body_parsing(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    client.app.state.config.server.max_upload_bytes = 3
+
+    response = client.post(
+        "/articles",
+        headers={**_auth(), "Content-Length": str(2 * 1024 * 1024)},
+        content=b"not-json",
+    )
+
+    assert response.status_code == 413
 
 
 def _result() -> SearchResult:

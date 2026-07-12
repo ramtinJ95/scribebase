@@ -27,7 +27,10 @@
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
 
   <key>StandardOutPath</key>
   <string>/Users/ramtin/scribebase-data/logs/scribebase-worker.out.log</string>
