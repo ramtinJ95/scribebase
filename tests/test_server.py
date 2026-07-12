@@ -9,6 +9,7 @@ from scribebase.models import Chunk, SearchResult, SourceManifest
 from scribebase.paths import ensure_data_layout
 from scribebase.source_registry import write_manifest
 from scribebase.server import ServiceHealth, create_app
+from scribebase.server_jobs import _worker_lock
 
 
 TOKEN = "test-token"
@@ -44,6 +45,16 @@ def test_health_reports_readiness(tmp_path, monkeypatch) -> None:
     assert body["data_dir"] == str(tmp_path)
     assert body["auth_required"] is True
     assert body["weaviate"] == {"ok": True, "message": "ready"}
+    assert body["worker"] == {"ok": False, "message": "worker is not running"}
+
+
+def test_health_reports_running_worker(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    with _worker_lock(tmp_path):
+        response = client.get("/health")
+
+    assert response.json()["worker"] == {"ok": True, "message": "worker lock held"}
 
 
 def test_sources_requires_bearer_auth(tmp_path, monkeypatch) -> None:
@@ -135,11 +146,6 @@ def test_context_returns_context_pack(tmp_path, monkeypatch) -> None:
 
 def test_ingest_upload_creates_job(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
-    started: list[str] = []
-    monkeypatch.setattr(
-        "scribebase.server.run_ingest_job",
-        lambda job_id, config: started.append(job_id),
-    )
 
     response = client.post(
         "/ingest",
@@ -155,18 +161,12 @@ def test_ingest_upload_creates_job(tmp_path, monkeypatch) -> None:
     assert body["source_type"] == "paper"
     assert body["language"] == "en"
     assert "upload_path" not in body
-    assert started == [body["job_id"]]
     assert (tmp_path / "jobs" / f"{body['job_id']}.json").exists()
     assert (tmp_path / "uploads" / f"{body['job_id']}_paper.pdf").read_bytes() == b"%PDF-1.7 test"
 
 
 def test_ingest_upload_accepts_text_file(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
-    started: list[str] = []
-    monkeypatch.setattr(
-        "scribebase.server.run_ingest_job",
-        lambda job_id, config: started.append(job_id),
-    )
 
     response = client.post(
         "/ingest",
@@ -190,13 +190,13 @@ def test_ingest_upload_accepts_text_file(tmp_path, monkeypatch) -> None:
     assert body["tags"] == ["kubernetes", "notes"]
     assert body["origin"] == "manual"
     assert body["collection"] == "kubernetes-reading"
-    assert started == [body["job_id"]]
-    assert (tmp_path / "uploads" / f"{body['job_id']}_notes.txt").read_bytes() == b"plain text notes"
+    assert (
+        tmp_path / "uploads" / f"{body['job_id']}_notes.txt"
+    ).read_bytes() == b"plain text notes"
 
 
 def test_ingest_upload_uses_markdown_frontmatter_defaults(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr("scribebase.server.run_ingest_job", lambda *_: None)
 
     response = client.post(
         "/ingest",
@@ -243,13 +243,59 @@ def test_ingest_upload_without_title_or_frontmatter_returns_400(tmp_path, monkey
     assert list((tmp_path / "jobs").iterdir()) == []
 
 
+def test_ingest_upload_rejects_oversized_file(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    client.app.state.config.server.max_upload_bytes = 3
+
+    response = client.post(
+        "/ingest",
+        headers=_auth(),
+        data={"title": "Too large"},
+        files={"file": ("notes.txt", b"four", "text/plain")},
+    )
+
+    assert response.status_code == 413
+    assert not list((tmp_path / "uploads").glob("*"))
+
+
+def test_ingest_upload_rejects_unsupported_type(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/ingest",
+        headers=_auth(),
+        data={"title": "Archive"},
+        files={"file": ("archive.zip", b"zip", "application/zip")},
+    )
+
+    assert response.status_code == 415
+    assert not list((tmp_path / "uploads").glob("*"))
+
+
+def test_ingest_rejects_when_queue_is_full(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    client.app.state.config.server.max_active_jobs = 1
+    first = client.post(
+        "/ingest",
+        headers=_auth(),
+        data={"title": "One"},
+        files={"file": ("one.txt", b"one", "text/plain")},
+    )
+
+    second = client.post(
+        "/ingest",
+        headers=_auth(),
+        data={"title": "Two"},
+        files={"file": ("two.txt", b"two", "text/plain")},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert len(list((tmp_path / "uploads").glob("*"))) == 1
+
+
 def test_article_ingest_json_creates_markdown_job(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
-    started: list[str] = []
-    monkeypatch.setattr(
-        "scribebase.server.run_ingest_job",
-        lambda job_id, config: started.append(job_id),
-    )
 
     response = client.post(
         "/articles",
@@ -281,7 +327,6 @@ def test_article_ingest_json_creates_markdown_job(tmp_path, monkeypatch) -> None
     assert body["origin"] == "company_blog"
     assert body["publisher"] == "Example Blog"
     assert body["collection"] == "infra-reading"
-    assert started == [body["job_id"]]
     assert (tmp_path / "uploads" / f"{body['job_id']}_gitops_article.md").read_text() == (
         "# GitOps\n\nArgo CD reconciles declared state."
     )
@@ -289,7 +334,6 @@ def test_article_ingest_json_creates_markdown_job(tmp_path, monkeypatch) -> None
 
 def test_article_ingest_json_uses_markdown_frontmatter_defaults(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr("scribebase.server.run_ingest_job", lambda *_: None)
 
     response = client.post(
         "/articles",
@@ -331,7 +375,9 @@ def test_article_ingest_json_rejects_empty_body(tmp_path, monkeypatch) -> None:
     assert list((tmp_path / "jobs").iterdir()) == []
 
 
-def test_article_ingest_json_without_title_or_frontmatter_returns_400(tmp_path, monkeypatch) -> None:
+def test_article_ingest_json_without_title_or_frontmatter_returns_400(
+    tmp_path, monkeypatch
+) -> None:
     client = _client(tmp_path, monkeypatch)
 
     response = client.post(
@@ -348,7 +394,6 @@ def test_article_ingest_json_without_title_or_frontmatter_returns_400(tmp_path, 
 
 def test_job_status_returns_persisted_job(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr("scribebase.server.run_ingest_job", lambda *_: None)
     created = client.post(
         "/ingest",
         headers=_auth(),

@@ -1,26 +1,36 @@
 from __future__ import annotations
 
 import secrets
-from io import BytesIO
 from datetime import datetime
+from io import BytesIO
 from typing import Annotated
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from scribebase.config import AppConfig, load_config, read_api_token
 from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
-from scribebase.models import GenericMetadata, Language, SearchFilters, SearchResult, SourceManifest, SourceType
+from scribebase.models import (
+    GenericMetadata,
+    Language,
+    SearchFilters,
+    SearchResult,
+    SourceManifest,
+    SourceType,
+)
 from scribebase.paths import ensure_data_layout
 from scribebase.retrieval.context_pack import build_context_pack
 from scribebase.retrieval.search import search_chunks
 from scribebase.server_jobs import (
     IngestJobResponse,
+    QueueFullError,
+    UnsupportedUploadError,
+    UploadTooLargeError,
     create_ingest_job,
     public_job,
     read_job,
-    run_ingest_job,
+    worker_is_running,
 )
 from scribebase.source_registry import list_manifests, slugify
 from scribebase.vectorstores.weaviate_store import WeaviateStore
@@ -37,6 +47,7 @@ class HealthResponse(BaseModel):
     sources_count: int
     weaviate: ServiceHealth
     embeddings: ServiceHealth
+    worker: ServiceHealth
     auth_required: bool
 
 
@@ -100,6 +111,7 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
             sources_count=len(list_manifests(config.data_dir)),
             weaviate=_weaviate_health(config),
             embeddings=_embedding_health(config),
+            worker=_worker_health(config),
             auth_required=bool(api_token),
         )
 
@@ -145,7 +157,6 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
 
     @app.post("/ingest", response_model=IngestJobResponse, dependencies=[Depends(require_auth)])
     def ingest(
-        background_tasks: BackgroundTasks,
         file: UploadFile = File(...),
         title: str | None = Form(None),
         source_type: SourceType | None = Form(None),
@@ -194,18 +205,30 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
                 collection=collection,
                 summary=summary,
             )
+        except UploadTooLargeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)
+            ) from exc
+        except UnsupportedUploadError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(exc)
+            ) from exc
+        except QueueFullError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        background_tasks.add_task(run_ingest_job, job.job_id, config)
         return public_job(job)
 
     @app.post("/articles", response_model=IngestJobResponse, dependencies=[Depends(require_auth)])
     def ingest_article(
         request: ArticleIngestRequest,
-        background_tasks: BackgroundTasks,
     ) -> IngestJobResponse:
         if not request.body.strip():
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="body must not be empty")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="body must not be empty"
+            )
         filename = f"{slugify(request.title or 'article')[:80]}.md"
         try:
             job = create_ingest_job(
@@ -233,12 +256,21 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
                 collection=request.collection,
                 summary=request.summary,
             )
+        except UploadTooLargeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)
+            ) from exc
+        except QueueFullError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)
+            ) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        background_tasks.add_task(run_ingest_job, job.job_id, config)
         return public_job(job)
 
-    @app.get("/jobs/{job_id}", response_model=IngestJobResponse, dependencies=[Depends(require_auth)])
+    @app.get(
+        "/jobs/{job_id}", response_model=IngestJobResponse, dependencies=[Depends(require_auth)]
+    )
     def job_status(job_id: str) -> IngestJobResponse:
         try:
             return public_job(read_job(config.data_dir, job_id))
@@ -283,3 +315,11 @@ def _weaviate_health(config: AppConfig) -> ServiceHealth:
 def _embedding_health(config: AppConfig) -> ServiceHealth:
     ok, message = LlamaCppEmbeddingClient(config.embedding).check_health()
     return ServiceHealth(ok=ok, message=message)
+
+
+def _worker_health(config: AppConfig) -> ServiceHealth:
+    running = worker_is_running(config.data_dir)
+    return ServiceHealth(
+        ok=running,
+        message="worker lock held" if running else "worker is not running",
+    )

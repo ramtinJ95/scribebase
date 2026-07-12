@@ -29,8 +29,7 @@ class EmbeddingConfig(BaseModel):
     timeout_seconds: int = 120
     batch_size: int = 8
     query_instruction: str = (
-        "Instruct: Given a question, retrieve relevant source passages that answer it\n"
-        "Query: "
+        "Instruct: Given a question, retrieve relevant source passages that answer it\nQuery: "
     )
     normalize: bool = True
     dimension: int | None = None
@@ -94,6 +93,9 @@ class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8765
     api_token_env: str = API_TOKEN_ENV
+    max_upload_bytes: int = Field(default=250 * 1024 * 1024, gt=0)
+    max_active_jobs: int = Field(default=20, gt=0)
+    worker_poll_seconds: float = Field(default=2.0, gt=0)
 
 
 class AppConfig(BaseModel):

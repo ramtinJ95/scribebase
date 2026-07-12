@@ -376,6 +376,9 @@ server:
   host: "127.0.0.1"
   port: 8765
   api_token_env: "SCRIBEBASE_API_TOKEN"
+  max_upload_bytes: 262144000
+  max_active_jobs: 20
+  worker_poll_seconds: 2.0
 ```
 
 ### Environment overrides
@@ -405,6 +408,7 @@ Install the server extra and set a bearer token before starting the API:
 uv sync --extra server
 export SCRIBEBASE_API_TOKEN=change-me
 uv run scribebase serve
+uv run scribebase worker
 ```
 
 Endpoints:
@@ -418,6 +422,10 @@ Endpoints:
 - `POST /context`: search and return a ready-to-paste context pack.
 
 Protected endpoints require `Authorization: Bearer $SCRIBEBASE_API_TOKEN`.
+Uploaded documents and articles remain `queued` until the separate worker
+claims them. Run exactly one worker per data directory; interrupted `running`
+jobs are returned to the queue when the worker starts. Upload size, active queue
+capacity, and polling interval are configured under `server` in `config.yaml`.
 
 Example search:
 

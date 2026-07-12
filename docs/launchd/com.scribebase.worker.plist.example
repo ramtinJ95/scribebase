@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.scribebase.worker</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/ramtin/workspace/scribebase</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/ramtin/.local/bin/uv</string>
+    <string>run</string>
+    <string>scribebase</string>
+    <string>worker</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SCRIBEBASE_DATA_DIR</key>
+    <string>/Users/ramtin/scribebase-data</string>
+    <key>SCRIBEBASE_CONFIG</key>
+    <string>/Users/ramtin/scribebase-data/config.yaml</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/ramtin/scribebase-data/logs/scribebase-worker.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/ramtin/scribebase-data/logs/scribebase-worker.err.log</string>
+</dict>
+</plist>
