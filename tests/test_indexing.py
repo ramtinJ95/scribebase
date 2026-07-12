@@ -15,6 +15,9 @@ class Logger:
     def warning(self, *args) -> None:  # noqa: ANN002
         pass
 
+    def error(self, *args) -> None:  # noqa: ANN002
+        pass
+
 
 def _manifest(tmp_path, source_id: str = "source-1") -> SourceManifest:  # noqa: ANN001
     root = tmp_path / "sources" / source_id
@@ -169,6 +172,54 @@ def test_index_source_preserves_local_state_and_stale_vectors_on_batch_failure(
     assert writes == []
 
 
+def test_failed_rollback_preserves_vector_snapshot(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    manifest = _manifest(tmp_path)
+
+    class Embedder:
+        def __init__(self, _config) -> None:  # noqa: ANN001
+            pass
+
+        def embed_batches(self, _texts):  # noqa: ANN001
+            yield [[1.0, 0.0]]
+
+    class Store:
+        def __init__(self, _config) -> None:  # noqa: ANN001
+            pass
+
+        def ensure_collection(self) -> None:
+            pass
+
+        def iter_source_chunks(self, *_args, **_kwargs):
+            yield _chunk(manifest.source_id, 9, "old"), [0.5, 0.5]
+
+        def upsert_chunks(self, *_args, **_kwargs) -> None:
+            raise RuntimeError("weaviate unavailable")
+
+        def delete_source(self, _source_id) -> None:  # noqa: ANN001
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("scribebase.indexing.find_source", lambda *_: manifest)
+    monkeypatch.setattr(
+        "scribebase.indexing.chunk_source", lambda *_: [_chunk(manifest.source_id, 0)]
+    )
+    monkeypatch.setattr("scribebase.indexing.LlamaCppEmbeddingClient", Embedder)
+    monkeypatch.setattr("scribebase.indexing.WeaviateStore", Store)
+
+    with pytest.raises(RuntimeError, match="Recovery snapshot preserved"):
+        index_source(manifest.source_id, config, Logger())
+
+    snapshots = list(
+        (tmp_path / "sources" / manifest.source_id / "metadata").glob("index_snapshot_*.jsonl")
+    )
+    assert len(snapshots) == 1
+    assert '"chunk_id": "old"' in snapshots[0].read_text()
+
+
 def test_full_rebuild_promotes_only_after_count_verification(tmp_path, monkeypatch) -> None:  # noqa: ANN001
     config = default_config()
     config.data_dir = tmp_path
@@ -221,8 +272,14 @@ def test_full_rebuild_promotes_only_after_count_verification(tmp_path, monkeypat
 
     event_names = [event[0] for event in events]
     assert event_names.index("count") < event_names.index("promote")
-    assert event_names.count("manifest") == 2
     assert events[-1] == ("delete", "ChunkIndexOld")
+    for manifest in manifests:
+        manifest_path = tmp_path / "sources" / manifest.source_id / "metadata" / "manifest.json"
+        assert (
+            SourceManifest.model_validate_json(manifest_path.read_text()).source_id
+            == manifest.source_id
+        )
+    assert not list(tmp_path.glob("sources/*/metadata/*.ChunkBuild*.*"))
 
 
 def test_failed_full_rebuild_preserves_live_chunk_files(tmp_path, monkeypatch) -> None:  # noqa: ANN001
@@ -309,10 +366,57 @@ def test_alias_migration_failure_preserves_verified_staging_collection(
     monkeypatch.setattr("scribebase.indexing._index_source", fake_index)
     monkeypatch.setattr("scribebase.indexing.WeaviateStore", Store)
 
-    with pytest.raises(CollectionAliasMigrationError, match="Verified data remains"):
+    with pytest.raises(CollectionAliasMigrationError, match="Verified rebuilt data remains"):
         rebuild_index(None, True, config, Logger())
 
     assert deleted == []
+
+
+def test_post_promotion_file_failure_preserves_all_staged_artifacts(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    manifest = _manifest(tmp_path)
+    live_chunks = tmp_path / "sources" / manifest.source_id / "metadata" / "chunks.jsonl"
+    live_chunks.write_text("old chunks\n")
+
+    class Store:
+        def __init__(self, _config) -> None:  # noqa: ANN001
+            pass
+
+        def create_collection(self, _name: str) -> None:
+            pass
+
+        def object_count(self, _name: str) -> int:
+            return 1
+
+        def promote_collection(self, _name: str):  # noqa: ANN201
+            return "ChunkOld"
+
+        def delete_collection(self, _name: str) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    def fake_index(_source_id, *_args, **kwargs):  # noqa: ANN001
+        kwargs["chunks_output_path"].write_text('{"staged": true}\n')
+        return manifest
+
+    monkeypatch.setattr("scribebase.source_registry.list_manifests", lambda *_: [manifest])
+    monkeypatch.setattr("scribebase.indexing.find_source", lambda *_: manifest)
+    monkeypatch.setattr("scribebase.indexing._index_source", fake_index)
+    monkeypatch.setattr("scribebase.indexing.WeaviateStore", Store)
+    monkeypatch.setattr(
+        "scribebase.indexing._install_staged_files",
+        lambda _files: (_ for _ in ()).throw(OSError("disk failure")),
+    )
+
+    with pytest.raises(OSError, match="disk failure"):
+        rebuild_index(None, True, config, Logger())
+
+    assert live_chunks.read_text() == "old chunks\n"
+    staged = list(tmp_path.glob("sources/*/metadata/*.ChunkBuild*.*"))
+    assert {path.name.split(".", 1)[0] for path in staged} == {"chunks", "manifest"}
 
 
 def test_index_lock_rejects_concurrent_mutation(tmp_path) -> None:  # noqa: ANN001

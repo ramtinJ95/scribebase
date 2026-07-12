@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import shutil
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,6 +73,7 @@ def _index_source(
     inserted = 0
     old_chunk_ids: set[str] = set()
     mutation_started = False
+    preserve_snapshot = False
     try:
         if no_create_collection:
             client = store.connect()
@@ -115,14 +117,16 @@ def _index_source(
             try:
                 _restore_source(store, source_id, snapshot_path, config.embedding.batch_size)
             except Exception as rollback_exc:
+                preserve_snapshot = True
                 raise RuntimeError(
                     f"Index update failed for {source_id}; restoring the previous vectors also failed: "
-                    f"{rollback_exc}"
+                    f"{rollback_exc}. Recovery snapshot preserved at {snapshot_path}"
                 ) from exc
         raise
     finally:
         store.close()
-        snapshot_path.unlink(missing_ok=True)
+        if not preserve_snapshot:
+            snapshot_path.unlink(missing_ok=True)
 
     _write_chunks_atomic(chunks_path, chunks)
 
@@ -180,8 +184,7 @@ def _rebuild_index(
         logger.info("Building staged Weaviate collection %s", staging)
         store.create_collection(staging)
         expected = 0
-        rebuilt: list[SourceManifest] = []
-        pending_chunks: list[tuple[Path, Path]] = []
+        pending_files: list[tuple[Path, Path]] = []
         promoted = False
         try:
             for sid in ids:
@@ -189,7 +192,7 @@ def _rebuild_index(
                     manifest = find_source(config.data_dir, sid)
                     live_chunks = Path(manifest.data_dir) / "metadata" / "chunks.jsonl"
                     staged_chunks = live_chunks.with_name(f"chunks.{staging}.jsonl")
-                    pending_chunks.append((staged_chunks, live_chunks))
+                    pending_files.append((staged_chunks, live_chunks))
                     manifest = _index_source(
                         sid,
                         config,
@@ -200,7 +203,10 @@ def _rebuild_index(
                         write_manifest_summary=False,
                         chunks_output_path=staged_chunks,
                     )
-                    rebuilt.append(manifest)
+                    live_manifest = Path(manifest.data_dir) / "metadata" / "manifest.json"
+                    staged_manifest = live_manifest.with_name(f"manifest.{staging}.json")
+                    staged_manifest.write_text(manifest.model_dump_json(indent=2))
+                    pending_files.append((staged_manifest, live_manifest))
                     expected += _jsonl_row_count(staged_chunks)
             actual = store.object_count(staging)
             if actual != expected:
@@ -210,10 +216,7 @@ def _rebuild_index(
             previous = store.promote_collection(staging)
             promoted = True
             logger.info("Promoted %s as alias %s", staging, config.weaviate.collection)
-            for staged_chunks, live_chunks in pending_chunks:
-                staged_chunks.replace(live_chunks)
-            for manifest in rebuilt:
-                write_manifest(manifest)
+            _install_staged_files(pending_files)
             if previous and previous != staging:
                 try:
                     store.delete_collection(previous)
@@ -228,8 +231,15 @@ def _rebuild_index(
                     logger.warning(
                         "Could not remove failed staging collection %s: %s", staging, exc
                     )
-            for staged_chunks, _ in pending_chunks:
-                staged_chunks.unlink(missing_ok=True)
+            if not promoted:
+                for staged_path, _ in pending_files:
+                    staged_path.unlink(missing_ok=True)
+            else:
+                logger.error(
+                    "Index was promoted but local metadata finalization failed; staged files "
+                    "were preserved for recovery: %s",
+                    ", ".join(str(staged) for staged, _ in pending_files),
+                )
             raise
     finally:
         store.close()
@@ -329,6 +339,18 @@ def _iter_jsonl(path: Path) -> Iterator[dict]:
 def _jsonl_row_count(path: Path) -> int:
     with path.open() as rows:
         return sum(1 for line in rows if line.strip())
+
+
+def _install_staged_files(files: list[tuple[Path, Path]]) -> None:
+    for staged, live in files:
+        temporary = live.with_suffix(f"{live.suffix}.{uuid4().hex}.tmp")
+        try:
+            shutil.copy2(staged, temporary)
+            temporary.replace(live)
+        finally:
+            temporary.unlink(missing_ok=True)
+    for staged, _ in files:
+        staged.unlink()
 
 
 @contextmanager

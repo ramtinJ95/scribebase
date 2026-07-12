@@ -188,11 +188,19 @@ def test_promote_collection_migrates_legacy_physical_collection() -> None:
     aliases = FakeAliases()
     collections = FakeCollections({"Chunk", "ChunkBuild1"})
     store.client = type("Client", (), {"alias": aliases, "collections": collections})()
+    created = []
+    copied = []
+    store.create_collection = created.append
+    store.copy_collection = lambda source, target: copied.append((source, target))
+    store.object_count = lambda _name: 7
+    store.delete_collection = collections.delete
 
     previous = store.promote_collection("ChunkBuild1")
 
     assert previous is None
-    assert collections.deleted == ["Chunk"]
+    assert created[0].startswith("ChunkLegacy")
+    assert copied == [("Chunk", created[0])]
+    assert collections.deleted == ["Chunk", created[0]]
     assert aliases.created == [{"alias_name": "Chunk", "target_collection": "ChunkBuild1"}]
 
 
@@ -207,3 +215,53 @@ def test_promote_collection_atomically_updates_existing_alias() -> None:
     assert previous == "ChunkIndexOld"
     assert collections.deleted == []
     assert aliases.updated == [{"alias_name": "Chunk", "new_target_collection": "ChunkBuild1"}]
+
+
+def test_source_iteration_uses_cursor_pagination(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr("weaviate.classes.query.Filter", FakeFilter)
+    chunks = [
+        Chunk(
+            chunk_id=f"chunk-{index}",
+            source_id="source-1",
+            source_type="book",
+            title="Book",
+            chunk_index=index,
+            text="text",
+            file_path="document.md",
+            extraction_method="markdown",
+        )
+        for index in range(3)
+    ]
+    objects = [
+        type(
+            "Object",
+            (),
+            {
+                "uuid": f"uuid-{index}",
+                "properties": chunk.model_dump(mode="json", exclude_none=True),
+                "vector": {"text_vector": [float(index), 1.0]},
+            },
+        )()
+        for index, chunk in enumerate(chunks)
+    ]
+    after_values = []
+
+    class Query:
+        def fetch_objects(self, **kwargs):  # noqa: ANN003, ANN201
+            after_values.append(kwargs["after"])
+            page = objects[:2] if kwargs["after"] is None else objects[2:]
+            return type("Result", (), {"objects": page})()
+
+    collection = type("Collection", (), {"query": Query()})()
+    collections = type(
+        "Collections",
+        (),
+        {"exists": lambda *_: True, "use": lambda *_: collection},
+    )()
+    store = weaviate_store.WeaviateStore(weaviate_store.WeaviateConfig())
+    store.client = type("Client", (), {"collections": collections})()
+
+    rows = list(store.iter_source_chunks("source-1", include_vectors=True, page_size=2))
+
+    assert [chunk.chunk_id for chunk, _ in rows] == ["chunk-0", "chunk-1", "chunk-2"]
+    assert after_values == [None, "uuid-1"]

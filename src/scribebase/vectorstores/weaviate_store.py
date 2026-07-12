@@ -43,12 +43,14 @@ WEAVIATE_CHUNK_PROPERTIES = {
 
 
 class CollectionAliasMigrationError(RuntimeError):
-    def __init__(self, alias_name: str, target: str):
+    def __init__(self, alias_name: str, target: str, backup: str | None = None):
         self.alias_name = alias_name
         self.target = target
+        self.backup = backup
+        recovery = f" Legacy data remains in {backup!r}." if backup else ""
         super().__init__(
             f"Could not create alias {alias_name!r} after removing its legacy physical collection. "
-            f"Verified data remains in {target!r}; retry alias creation before deleting it."
+            f"Verified rebuilt data remains in {target!r}.{recovery}"
         )
 
 
@@ -154,15 +156,45 @@ class WeaviateStore:
             ):
                 raise RuntimeError(f"Failed to promote Weaviate collection: {target}")
             return previous
+        backup = None
         if client.collections.exists(self.config.collection):
+            backup = f"{self.config.collection}Legacy{uuid4().hex[:10]}"
+            self.create_collection(backup)
+            self.copy_collection(self.config.collection, backup)
+            source_count = self.object_count(self.config.collection)
+            backup_count = self.object_count(backup)
+            if source_count != backup_count:
+                self.delete_collection(backup)
+                raise RuntimeError(
+                    f"Legacy index backup verification failed: expected {source_count}, "
+                    f"found {backup_count}"
+                )
             client.collections.delete(self.config.collection)
         try:
             client.alias.create(alias_name=self.config.collection, target_collection=target)
         except Exception as exc:
             alias = client.alias.get(alias_name=self.config.collection)
             if alias is not None and alias.collection == target:
+                if backup:
+                    self.delete_collection(backup)
                 return None
+            if backup:
+                try:
+                    self.create_collection(self.config.collection)
+                    self.copy_collection(backup, self.config.collection)
+                    if self.object_count(self.config.collection) != self.object_count(backup):
+                        raise RuntimeError("restored object count does not match backup")
+                    self.delete_collection(backup)
+                except Exception as restore_exc:
+                    raise CollectionAliasMigrationError(
+                        self.config.collection, target, backup
+                    ) from restore_exc
+                raise RuntimeError(
+                    f"Alias migration failed; restored legacy collection {self.config.collection!r}"
+                ) from exc
             raise CollectionAliasMigrationError(self.config.collection, target) from exc
+        if backup:
+            self.delete_collection(backup)
         return None
 
     def delete_collection(self, name: str) -> None:
@@ -175,6 +207,34 @@ class WeaviateStore:
         collection = (self.client or self.connect()).collections.use(name)
         result = collection.aggregate.over_all(total_count=True)
         return int(result.total_count or 0)
+
+    def copy_collection(self, source: str, target: str, page_size: int = 100) -> None:
+        source_collection = (self.client or self.connect()).collections.use(source)
+        target_collection = (self.client or self.connect()).collections.use(target)
+        after = None
+        while True:
+            result = source_collection.query.fetch_objects(
+                include_vector=True,
+                limit=page_size,
+                after=after,
+            )
+            if not result.objects:
+                return
+            with target_collection.batch.dynamic() as batch:
+                for obj in result.objects:
+                    batch.add_object(
+                        properties=dict(obj.properties),
+                        vector=obj.vector,
+                        uuid=obj.uuid,
+                    )
+            failed_objects = getattr(target_collection.batch, "failed_objects", None)
+            if failed_objects:
+                raise RuntimeError(
+                    f"Failed to copy {len(failed_objects)} objects from {source} to {target}"
+                )
+            if len(result.objects) < page_size:
+                return
+            after = result.objects[-1].uuid
 
     def upsert_chunks(
         self,
@@ -222,13 +282,13 @@ class WeaviateStore:
 
         self.ensure_collection()
         collection = (self.client or self.connect()).collections.use(self.config.collection)
-        offset = 0
+        after = None
         while True:
             result = collection.query.fetch_objects(
                 filters=Filter.by_property("source_id").equal(source_id),
                 include_vector=self.config.vector_name if include_vectors else False,
                 limit=page_size,
-                offset=offset,
+                after=after,
             )
             if not result.objects:
                 return
@@ -244,7 +304,7 @@ class WeaviateStore:
                 yield Chunk(**_props_to_chunk(dict(obj.properties))), vector
             if len(result.objects) < page_size:
                 return
-            offset += len(result.objects)
+            after = result.objects[-1].uuid
 
     def delete_source(self, source_id: str) -> None:
         from weaviate.classes.query import Filter
