@@ -21,7 +21,7 @@ from scribebase.models import PageMetadata, SourceManifest, SourceMetadataInput,
 from scribebase.ocr.shell_provider import ShellOCRProvider
 from scribebase.paths import chapter_file_name, source_subdirs
 from scribebase.pdf_router import evaluate_text_quality
-from scribebase.source_registry import create_manifest, write_manifest
+from scribebase.source_registry import create_manifest, prepare_source_identity, write_manifest
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"}
 MARKDOWN_EXTS = {".md", ".markdown"}
@@ -60,6 +60,7 @@ def extract_source(
     collection: str | None = None,
     summary: str | None = None,
     source_id: str | None = None,
+    duplicate_policy: str = "reject",
 ) -> SourceManifest:
     input_path = input_path.expanduser().resolve()
     if not input_path.exists():
@@ -72,6 +73,20 @@ def extract_source(
     course = _resolve_field(course, frontmatter.course)
     chapter = _resolve_field(chapter, frontmatter.chapter)
     language = _resolve_field(language, frontmatter.language) or "unknown"
+    origin = _resolve_field(origin, frontmatter.origin)
+    canonical_url = _resolve_field(canonical_url, frontmatter.canonical_url)
+    url = _resolve_field(url, frontmatter.url)
+    external_id = _resolve_field(external_id, frontmatter.external_id)
+    identity_key, content_sha256 = prepare_source_identity(
+        config.data_dir,
+        input_path,
+        origin=origin,
+        canonical_url=canonical_url,
+        url=url,
+        external_id=external_id,
+        source_id=source_id,
+        duplicate_policy=duplicate_policy,
+    )
     manifest = create_manifest(
         config.data_dir,
         input_path,
@@ -81,18 +96,20 @@ def extract_source(
         chapter,
         language,
         tags=tags if tags is not None else frontmatter.tags,
-        origin=_resolve_field(origin, frontmatter.origin),
+        origin=origin,
         publisher=_resolve_field(publisher, frontmatter.publisher),
         author=_resolve_field(author, frontmatter.author),
         created_at_source=_resolve_field(created_at_source, frontmatter.created_at_source),
         updated_at_source=_resolve_field(updated_at_source, frontmatter.updated_at_source),
         retrieved_at=_resolve_field(retrieved_at, frontmatter.retrieved_at),
-        url=_resolve_field(url, frontmatter.url),
-        canonical_url=_resolve_field(canonical_url, frontmatter.canonical_url),
-        external_id=_resolve_field(external_id, frontmatter.external_id),
+        url=url,
+        canonical_url=canonical_url,
+        external_id=external_id,
         collection=_resolve_field(collection, frontmatter.collection),
         summary=_resolve_field(summary, frontmatter.summary),
         source_id=source_id,
+        identity_key=identity_key,
+        content_sha256=content_sha256,
     )
     logger.info("Ingest source: %s (%s)", manifest.title, manifest.source_id)
     paths = source_subdirs(config.data_dir, manifest.source_id)

@@ -89,6 +89,8 @@ class SourceManifest(GenericMetadata):
     course: str | None = None
     chapter: str | None = None
     language: Language = "unknown"
+    identity_key: str | None = None
+    content_sha256: str | None = None
     original_path: str
     data_dir: str
     created_at: datetime

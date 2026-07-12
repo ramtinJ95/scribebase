@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 from datetime import datetime
 from io import BytesIO
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -35,6 +35,7 @@ from scribebase.server_jobs import (
     worker_status,
 )
 from scribebase.source_registry import list_manifests, slugify
+from scribebase.source_registry import DuplicateSourceError
 from scribebase.vectorstores.weaviate_store import WeaviateStore
 
 
@@ -85,6 +86,7 @@ class ArticleIngestRequest(GenericMetadata):
     chapter: str | None = None
     language: Language | None = None
     no_index: bool = False
+    duplicate_policy: Literal["reject", "create"] = "reject"
 
 
 _bearer = HTTPBearer(auto_error=False)
@@ -192,6 +194,7 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
         ocr: str = Form("auto"),
         no_index: bool = Form(False),
         continue_on_ocr_error: bool = Form(False),
+        duplicate_policy: Literal["reject", "create"] = Form("reject"),
     ) -> IngestJobResponse:
         try:
             job = create_ingest_job(
@@ -219,7 +222,17 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
                 collection=collection,
                 summary=summary,
                 expected_size=file.size,
+                duplicate_policy=duplicate_policy,
             )
+        except DuplicateSourceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": str(exc),
+                    "source_id": exc.source_id,
+                    "identity_key": exc.identity_key,
+                },
+            ) from exc
         except UploadTooLargeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)
@@ -271,7 +284,17 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
                 collection=request.collection,
                 summary=request.summary,
                 expected_size=len(request.body.encode("utf-8")),
+                duplicate_policy=request.duplicate_policy,
             )
+        except DuplicateSourceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": str(exc),
+                    "source_id": exc.source_id,
+                    "identity_key": exc.identity_key,
+                },
+            ) from exc
         except UploadTooLargeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)

@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from .models import SourceManifest, normalize_tags
 from .paths import source_dir, source_subdirs
+
+
+class DuplicateSourceError(ValueError):
+    def __init__(self, source_id: str, identity_key: str):
+        self.source_id = source_id
+        self.identity_key = identity_key
+        super().__init__(f"Source already exists: {source_id} ({identity_key})")
 
 
 def slugify(value: str) -> str:
@@ -81,6 +90,8 @@ def create_manifest(
     collection: str | None = None,
     summary: str | None = None,
     source_id: str | None = None,
+    identity_key: str | None = None,
+    content_sha256: str | None = None,
 ) -> SourceManifest:
     now = datetime.now(timezone.utc)
     source_id = source_id or generate_source_id(title, now)
@@ -93,6 +104,8 @@ def create_manifest(
         course=course,
         chapter=chapter,
         language=language,  # type: ignore[arg-type]
+        identity_key=identity_key,
+        content_sha256=content_sha256,
         tags=normalize_tags(tags),
         origin=origin,
         publisher=publisher,
@@ -112,6 +125,108 @@ def create_manifest(
     )
     write_manifest(manifest)
     return manifest
+
+
+def prepare_source_identity(
+    data_dir: Path,
+    input_path: Path,
+    *,
+    origin: str | None,
+    canonical_url: str | None,
+    url: str | None,
+    external_id: str | None,
+    source_id: str | None = None,
+    duplicate_policy: str = "reject",
+) -> tuple[str, str]:
+    if duplicate_policy not in {"reject", "create"}:
+        raise ValueError("duplicate_policy must be reject or create")
+    content_sha256 = hash_source(input_path)
+    identity_key = source_identity_key(
+        content_sha256=content_sha256,
+        origin=origin,
+        canonical_url=canonical_url,
+        url=url,
+        external_id=external_id,
+    )
+    duplicate = find_source_by_identity(data_dir, identity_key)
+    if duplicate is not None and duplicate.source_id != source_id and duplicate_policy == "reject":
+        raise DuplicateSourceError(duplicate.source_id, identity_key)
+    return identity_key, content_sha256
+
+
+def source_identity_key(
+    *,
+    content_sha256: str,
+    origin: str | None,
+    canonical_url: str | None,
+    url: str | None,
+    external_id: str | None,
+) -> str:
+    if external_id:
+        return f"external:{(origin or '').strip().lower()}:{external_id.strip()}"
+    if source_url := canonical_url or url:
+        return f"url:{normalize_url(source_url)}"
+    return f"sha256:{content_sha256}"
+
+
+def find_source_by_identity(data_dir: Path, identity_key: str) -> SourceManifest | None:
+    for manifest in list_manifests(data_dir):
+        existing_key = manifest.identity_key
+        if existing_key is None:
+            existing_key = _backfill_identity(manifest)
+        if existing_key == identity_key:
+            return manifest
+    return None
+
+
+def hash_source(path: Path) -> str:
+    digest = hashlib.sha256()
+    if path.is_file():
+        _hash_file(path, digest)
+        return digest.hexdigest()
+    if not path.is_dir():
+        raise FileNotFoundError(f"Cannot hash missing source: {path}")
+    for child in sorted(candidate for candidate in path.rglob("*") if candidate.is_file()):
+        digest.update(child.relative_to(path).as_posix().encode())
+        digest.update(b"\0")
+        _hash_file(child, digest)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def normalize_url(value: str) -> str:
+    parsed = urlsplit(value.strip())
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+    port = f":{parsed.port}" if parsed.port else ""
+    netloc = f"{hostname}{port}"
+    path = parsed.path.rstrip("/") or "/"
+    return urlunsplit((scheme, netloc, path, parsed.query, ""))
+
+
+def _backfill_identity(manifest: SourceManifest) -> str | None:
+    original = Path(manifest.original_path)
+    if not original.exists():
+        return None
+    content_sha256 = manifest.content_sha256 or hash_source(original)
+    identity_key = source_identity_key(
+        content_sha256=content_sha256,
+        origin=manifest.origin,
+        canonical_url=manifest.canonical_url,
+        url=manifest.url,
+        external_id=manifest.external_id,
+    )
+    manifest.content_sha256 = content_sha256
+    manifest.identity_key = identity_key
+    manifest.updated_at = datetime.now(timezone.utc)
+    write_manifest(manifest)
+    return identity_key
+
+
+def _hash_file(path: Path, digest) -> None:  # noqa: ANN001
+    with path.open("rb") as source:
+        while block := source.read(1024 * 1024):
+            digest.update(block)
 
 
 def copy_original(input_path: Path, dest_dir: Path) -> Path:

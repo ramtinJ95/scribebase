@@ -27,7 +27,12 @@ from scribebase.models import (
     normalize_tags,
 )
 from scribebase.paths import ensure_data_layout
-from scribebase.source_registry import find_source, slugify
+from scribebase.source_registry import (
+    DuplicateSourceError,
+    find_source,
+    prepare_source_identity,
+    slugify,
+)
 
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
 JobPhase = Literal["queued", "extracting", "extracted", "indexing", "completed"]
@@ -81,6 +86,9 @@ class IngestJob(GenericMetadata):
     attempts: int = 0
     claim_token: str | None = None
     worker_id: str | None = None
+    duplicate_policy: Literal["reject", "create"] = "reject"
+    identity_key: str | None = None
+    content_sha256: str | None = None
 
 
 class IngestJobResponse(GenericMetadata):
@@ -103,6 +111,9 @@ class IngestJobResponse(GenericMetadata):
     started_at: datetime | None = None
     finished_at: datetime | None = None
     attempts: int = 0
+    duplicate_policy: Literal["reject", "create"] = "reject"
+    identity_key: str | None = None
+    content_sha256: str | None = None
 
 
 def public_job(job: IngestJob) -> IngestJobResponse:
@@ -134,6 +145,7 @@ def create_ingest_job(
     collection: str | None = None,
     summary: str | None = None,
     expected_size: int | None = None,
+    duplicate_policy: Literal["reject", "create"] = "reject",
 ) -> IngestJob:
     ensure_data_layout(config.data_dir)
     job_id = uuid4().hex
@@ -167,6 +179,16 @@ def create_ingest_job(
 
         now = _now()
         planned_source_id = f"{slugify(title)}_{now.year}_{job_id[:6]}"
+        identity_key, content_sha256 = prepare_source_identity(
+            config.data_dir,
+            upload_path,
+            origin=_resolve_field(origin, frontmatter.origin),
+            canonical_url=_resolve_field(canonical_url, frontmatter.canonical_url),
+            url=_resolve_field(url, frontmatter.url),
+            external_id=_resolve_field(external_id, frontmatter.external_id),
+            source_id=planned_source_id,
+            duplicate_policy=duplicate_policy,
+        )
         job = IngestJob(
             job_id=job_id,
             status="queued",
@@ -194,11 +216,26 @@ def create_ingest_job(
             no_index=no_index,
             continue_on_ocr_error=continue_on_ocr_error,
             source_id=planned_source_id,
+            duplicate_policy=duplicate_policy,
+            identity_key=identity_key,
+            content_sha256=content_sha256,
             created_at=now,
             updated_at=now,
         )
         with _queue_lock(config.data_dir):
             _validate_upload_storage(config)
+            if duplicate_policy == "reject":
+                duplicate_job = next(
+                    (
+                        existing
+                        for existing in list_jobs(config.data_dir)
+                        if existing.identity_key == identity_key
+                        and existing.source_id != planned_source_id
+                    ),
+                    None,
+                )
+                if duplicate_job is not None:
+                    raise DuplicateSourceError(duplicate_job.source_id or "unknown", identity_key)
             write_job(config.data_dir, job)
             _release_reservation_unlocked(config.data_dir, job_id)
         return job
@@ -245,6 +282,7 @@ def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
                 collection=job.collection,
                 summary=job.summary,
                 source_id=job.source_id,
+                duplicate_policy=job.duplicate_policy,
             )
             if manifest.source_id != job.source_id:
                 raise RuntimeError(

@@ -500,6 +500,10 @@ curl -s http://127.0.0.1:8765/articles \
 
 `POST /articles` defaults `source_type` to `article`. The `body` may include
 Markdown frontmatter; explicit JSON fields override frontmatter values.
+Submissions are deduplicated by external ID/origin, canonical URL, then content
+SHA-256. Duplicates return `409` with the existing `source_id`. Use
+`duplicate_policy=create` (multipart) or `"duplicate_policy": "create"` (JSON)
+only when a separate copy is intentional.
 
 For reusable automation payload templates for company blogs, Hacker News,
 newsletters/RSS, notes, snippets, and docs, see

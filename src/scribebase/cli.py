@@ -165,6 +165,7 @@ def extract(
     collection: Optional[str] = None,
     summary: Optional[str] = None,
     ocr: str = typer.Option("auto"),
+    duplicate_policy: str = typer.Option("reject", help="reject or create"),
     continue_on_ocr_error: bool = False,
 ) -> None:
     try:
@@ -192,6 +193,7 @@ def extract(
             external_id=external_id,
             collection=collection,
             summary=summary,
+            duplicate_policy=duplicate_policy,
         )
         typer.echo(f"Extracted source_id={manifest.source_id}")
     except Exception as exc:
@@ -232,6 +234,7 @@ def ingest(
     collection: Optional[str] = None,
     summary: Optional[str] = None,
     ocr: str = typer.Option("auto"),
+    duplicate_policy: str = typer.Option("reject", help="reject or create"),
     no_index: bool = typer.Option(False, help="Extract only; do not index into Weaviate."),
     continue_on_ocr_error: bool = False,
 ) -> None:
@@ -261,6 +264,7 @@ def ingest(
             external_id=external_id,
             collection=collection,
             summary=summary,
+            duplicate_policy=duplicate_policy,
         )
         if not no_index:
             index_source(manifest.source_id, config, logger)
