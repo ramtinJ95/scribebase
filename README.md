@@ -202,8 +202,13 @@ uv run scribebase rebuild-index --all
 ```
 
 Use `rebuild-index --all` after changing embedding models, dimensions, or the
-Weaviate schema. It recreates the Weaviate collection so the vector index and
-filterable metadata fields match the current code.
+Weaviate schema. It builds and verifies a versioned physical collection before
+atomically promoting the configured collection alias. The first rebuild of a
+legacy physical collection briefly frees its name to create the alias; later
+rebuilds switch without search downtime. Failed staged rebuilds leave the live
+index unchanged. If that one-time alias creation fails after the legacy name is
+freed, ScribeBase preserves the verified staged collection and reports its name
+for recovery instead of deleting the only rebuilt copy.
 
 ### Inspect sources and chunks
 

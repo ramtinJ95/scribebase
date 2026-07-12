@@ -148,3 +148,120 @@ def test_build_filter_includes_generic_metadata(monkeypatch) -> None:
     assert clauses[("less_or_equal", "created_at_source")].isoformat().startswith("2026-07-31")
     assert clauses[("greater_or_equal", "retrieved_at")].isoformat().startswith("2026-07-08")
     assert clauses[("less_or_equal", "retrieved_at")].isoformat().startswith("2026-07-09")
+
+
+class FakeAliases:
+    def __init__(self, target: str | None = None, update_result: bool = True):
+        self.target = target
+        self.update_result = update_result
+        self.created = []
+        self.updated = []
+
+    def get(self, alias_name: str):  # noqa: ANN201
+        if self.target is None:
+            return None
+        return type("Alias", (), {"collection": self.target})()
+
+    def create(self, **kwargs) -> None:  # noqa: ANN003
+        self.created.append(kwargs)
+
+    def update(self, **kwargs) -> bool:  # noqa: ANN003
+        self.updated.append(kwargs)
+        return self.update_result
+
+
+class FakeCollections:
+    def __init__(self, existing: set[str]):
+        self.existing = existing
+        self.deleted = []
+
+    def exists(self, name: str) -> bool:
+        return name in self.existing
+
+    def delete(self, name: str) -> None:
+        self.deleted.append(name)
+        self.existing.discard(name)
+
+
+def test_promote_collection_migrates_legacy_physical_collection() -> None:
+    store = weaviate_store.WeaviateStore(weaviate_store.WeaviateConfig())
+    aliases = FakeAliases()
+    collections = FakeCollections({"Chunk", "ChunkBuild1"})
+    store.client = type("Client", (), {"alias": aliases, "collections": collections})()
+    created = []
+    copied = []
+    store.create_collection = created.append
+    store.copy_collection = lambda source, target: copied.append((source, target))
+    store.object_count = lambda _name: 7
+    store.delete_collection = collections.delete
+
+    previous = store.promote_collection("ChunkBuild1")
+
+    assert previous == created[0]
+    assert created[0].startswith("ChunkLegacy")
+    assert copied == [("Chunk", created[0])]
+    assert collections.deleted == ["Chunk"]
+    assert aliases.created == [{"alias_name": "Chunk", "target_collection": "ChunkBuild1"}]
+
+
+def test_promote_collection_atomically_updates_existing_alias() -> None:
+    store = weaviate_store.WeaviateStore(weaviate_store.WeaviateConfig())
+    aliases = FakeAliases(target="ChunkIndexOld")
+    collections = FakeCollections({"ChunkBuild1", "ChunkIndexOld"})
+    store.client = type("Client", (), {"alias": aliases, "collections": collections})()
+
+    previous = store.promote_collection("ChunkBuild1")
+
+    assert previous == "ChunkIndexOld"
+    assert collections.deleted == []
+    assert aliases.updated == [{"alias_name": "Chunk", "new_target_collection": "ChunkBuild1"}]
+
+
+def test_source_iteration_uses_cursor_pagination(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr("weaviate.classes.query.Filter", FakeFilter)
+    chunks = [
+        Chunk(
+            chunk_id=f"chunk-{index}",
+            source_id="source-1",
+            source_type="book",
+            title="Book",
+            chunk_index=index,
+            text="text",
+            file_path="document.md",
+            extraction_method="markdown",
+        )
+        for index in range(3)
+    ]
+    objects = [
+        type(
+            "Object",
+            (),
+            {
+                "uuid": f"uuid-{index}",
+                "properties": chunk.model_dump(mode="json", exclude_none=True),
+                "vector": {"text_vector": [float(index), 1.0]},
+            },
+        )()
+        for index, chunk in enumerate(chunks)
+    ]
+    after_values = []
+
+    class Query:
+        def fetch_objects(self, **kwargs):  # noqa: ANN003, ANN201
+            after_values.append(kwargs["after"])
+            page = objects[:2] if kwargs["after"] is None else objects[2:]
+            return type("Result", (), {"objects": page})()
+
+    collection = type("Collection", (), {"query": Query()})()
+    collections = type(
+        "Collections",
+        (),
+        {"exists": lambda *_: True, "use": lambda *_: collection},
+    )()
+    store = weaviate_store.WeaviateStore(weaviate_store.WeaviateConfig())
+    store.client = type("Client", (), {"collections": collections})()
+
+    rows = list(store.iter_source_chunks("source-1", include_vectors=True, page_size=2))
+
+    assert [chunk.chunk_id for chunk, _ in rows] == ["chunk-0", "chunk-1", "chunk-2"]
+    assert after_values == [None, "uuid-1"]
