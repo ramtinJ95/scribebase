@@ -18,16 +18,3 @@ def normalize_page_markdown(text: str, page_number: int) -> str:
 
 def combine_pages(page_markdowns: list[str]) -> str:
     return "\n".join(md.strip() for md in page_markdowns if md is not None).strip() + "\n"
-
-
-def page_numbers_in_text(text: str) -> list[int]:
-    return [int(match.group(1)) for match in PAGE_MARKER_RE.finditer(text)]
-
-
-def current_page_for_offset(text: str, offset: int) -> int | None:
-    current: int | None = None
-    for match in PAGE_MARKER_RE.finditer(text):
-        if match.start() > offset:
-            break
-        current = int(match.group(1))
-    return current

@@ -2,9 +2,9 @@
 
 ScribeBase is a local-first knowledge node for turning documents, notes, and web articles into cited Markdown and searchable RAG context.
 
-It can ingest PDFs, scanned pages, images, handwritten notes, Markdown, plain text, and automation-submitted articles; extract or OCR them into Markdown; chunk and embed the text locally; index it in Weaviate; and retrieve grounded context for search, answers, and quizzes.
+It can ingest PDFs, scanned pages, images, handwritten notes, Markdown, plain text, and automation-submitted articles; extract or OCR them into Markdown; chunk and embed the text locally; index it in Weaviate; and retrieve grounded context for agents.
 
-Local-first means extraction, OCR, embeddings, indexing, and retrieval run on your machine. Using an LLM for final answers is optional.
+Local-first means extraction, OCR, embeddings, indexing, and retrieval run on your machine. ScribeBase does not call a generation model; consuming agents use the cited context it returns.
 
 ## What ScribeBase does
 
@@ -17,8 +17,7 @@ Local-first means extraction, OCR, embeddings, indexing, and retrieval run on yo
 - Creates embeddings through a local llama.cpp-compatible `/v1/embeddings` server.
 - Indexes chunks into local Weaviate using self-provided vectors.
 - Searches with hybrid retrieval and metadata filters.
-- Builds context packs when no LLM is configured.
-- Optionally calls an OpenAI-compatible chat API for answers and quizzes.
+- Returns cited context packs for consuming agents.
 
 No Ollama dependency is used.
 
@@ -31,7 +30,6 @@ No Ollama dependency is used.
 - Optional OCR runtime:
   - GLM-OCR through llama.cpp for high-quality local OCR
   - Apple Vision on macOS for fast local OCR
-- Optional OpenAI-compatible chat API key for generated answers/quizzes
 
 ## Quickstart
 
@@ -88,14 +86,6 @@ Search it:
 ```bash
 uv run scribebase search "explain the main idea" --top-k 10
 ```
-
-Ask a question:
-
-```bash
-uv run scribebase ask "Explain the main idea with page citations." --top-k 10
-```
-
-If no LLM is configured, `ask` saves a context pack that you can paste into another model.
 
 ## Common workflows
 
@@ -302,22 +292,6 @@ Notes:
 - ScribeBase stores embedding model metadata and rejects accidental mixed-model retrieval by default.
 - The default chunking settings are conservative enough for small local embedding models.
 
-## LLM configuration
-
-LLM usage is optional. Without an LLM key, `ask` and `quiz` save context packs instead of failing.
-
-To enable generated answers and quizzes, configure an OpenAI-compatible chat API in `.scribebase/config.yaml`:
-
-```yaml
-llm:
-  enabled: true
-  provider: "openai_compatible"
-  base_url: "https://api.openai.com/v1"
-  model: "gpt-5.5-pro"
-  api_key_env: "OPENAI_API_KEY"
-  temperature: 0.2
-```
-
 ## Local data layout
 
 By default, ScribeBase writes to `.scribebase/`:
@@ -336,10 +310,6 @@ By default, ScribeBase writes to `.scribebase/`:
       page_0001.json
       chunks.jsonl
       manifest.json
-  outputs/
-    context_packs/
-    answers/
-    quizzes/
   uploads/
   jobs/
   logs/app.log
@@ -406,10 +376,10 @@ SCRIBEBASE_PORT=8765
 SCRIBEBASE_API_TOKEN=change-me
 ```
 
-- `SCRIBEBASE_DATA_DIR`: local source, output, and log directory.
+- `SCRIBEBASE_DATA_DIR`: local source, job, upload, and log directory.
 - `SCRIBEBASE_CONFIG`: explicit config path. Defaults to `$SCRIBEBASE_DATA_DIR/config.yaml`.
-- `SCRIBEBASE_HOST` and `SCRIBEBASE_PORT`: reserved for the upcoming HTTP server.
-- `SCRIBEBASE_API_TOKEN`: shared secret read from the environment, not written to config.
+- `SCRIBEBASE_HOST` and `SCRIBEBASE_PORT`: HTTP API bind address and port.
+- `SCRIBEBASE_API_TOKEN`: required API bearer token, read from the environment and not written to config.
 
 See `.env.example` for a copyable template.
 
@@ -551,8 +521,6 @@ scribebase index --source-id SOURCE_ID
 scribebase rebuild-index --source-id SOURCE_ID
 scribebase rebuild-index --all
 scribebase search QUERY [filters]
-scribebase ask QUESTION [filters]
-scribebase quiz [filters]
 scribebase sources list
 scribebase sources show SOURCE_ID
 scribebase chunks list --source-id SOURCE_ID

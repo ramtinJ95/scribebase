@@ -10,9 +10,6 @@ SOURCE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,199}")
 def ensure_data_layout(data_dir: Path) -> None:
     for rel in [
         "sources",
-        "outputs/context_packs",
-        "outputs/answers",
-        "outputs/quizzes",
         "logs",
         "uploads",
         "jobs",

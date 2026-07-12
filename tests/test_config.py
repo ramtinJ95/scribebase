@@ -29,7 +29,6 @@ def test_config_defaults_are_local_first() -> None:
     assert config.embedding.model == "Qwen3-Embedding-4B-Q4_K_M.gguf"
     assert config.embedding.batch_size == 8
     assert config.ocr.providers["apple_vision"].render_dpi == 200
-    assert not config.llm.enabled
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 8765
     assert config.server.api_token_env == API_TOKEN_ENV
@@ -40,6 +39,14 @@ def test_config_round_trip(tmp_path) -> None:
     loaded = load_config(path)
     assert loaded.data_dir == tmp_path
     assert loaded.ocr.default_provider == "shell"
+
+
+def test_load_config_rejects_removed_llm_section(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("llm:\n  enabled: true\n")
+
+    with pytest.raises(ValueError, match="llm configuration section is no longer supported"):
+        load_config(path)
 
 
 def test_load_config_applies_env_overrides(tmp_path, monkeypatch) -> None:

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import shlex
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -19,18 +17,14 @@ from scribebase.config import (
 )
 from scribebase.extraction import extract_source
 from scribebase.indexing import index_source, load_chunks, rebuild_index
-from scribebase.llm.openai_compatible import OpenAICompatibleChatClient, save_markdown
-from scribebase.llm.prompts import ANSWER_SYSTEM_PROMPT, QUIZ_SYSTEM_PROMPT
 from scribebase.logging_utils import setup_logging
-from scribebase.models import Chunk, SearchFilters, SearchResult
+from scribebase.models import SearchFilters
 from scribebase.paths import ensure_data_layout
-from scribebase.paths import chapter_file_name
-from scribebase.retrieval.context_pack import build_context_pack, save_context_pack
 from scribebase.retrieval.search import format_search_results, search_chunks
 from scribebase.source_registry import backfill_source_identities, find_source, list_manifests
 from scribebase.server_jobs import run_worker
 
-app = typer.Typer(help="Local OCR → Markdown → Weaviate RAG app.")
+app = typer.Typer(help="Local OCR, indexing, and cited retrieval knowledge node.")
 sources_app = typer.Typer(help="List and inspect sources.")
 chunks_app = typer.Typer(help="Inspect chunks.")
 app.add_typer(sources_app, name="sources")
@@ -113,9 +107,6 @@ def doctor() -> None:
         + (f" ({provider.command})" if provider else "")
         + (f"; {ocr_msg}" if ocr_msg else "")
     )
-    llm_key = os.getenv(config.llm.api_key_env)
-    llm_ok = (not config.llm.enabled) or bool(llm_key)
-    typer.echo(f"[{'OK' if llm_ok else 'WARN'}] LLM config: enabled={config.llm.enabled}")
 
 
 @app.command()
@@ -363,108 +354,6 @@ def search(
         _fail(exc)
 
 
-@app.command()
-def ask(
-    question: str,
-    source_id: Optional[str] = None,
-    title: Optional[str] = None,
-    source_type: Optional[str] = None,
-    course: Optional[str] = None,
-    chapter: Optional[str] = None,
-    section: Optional[str] = None,
-    tags: Optional[str] = typer.Option(None, help="Comma-separated tags."),
-    origin: Optional[str] = None,
-    publisher: Optional[str] = None,
-    author: Optional[str] = None,
-    url: Optional[str] = None,
-    canonical_url: Optional[str] = None,
-    external_id: Optional[str] = None,
-    collection: Optional[str] = None,
-    created_at_source_after: Optional[str] = None,
-    created_at_source_before: Optional[str] = None,
-    updated_at_source_after: Optional[str] = None,
-    updated_at_source_before: Optional[str] = None,
-    retrieved_at_after: Optional[str] = None,
-    retrieved_at_before: Optional[str] = None,
-    page_start: Optional[int] = None,
-    page_end: Optional[int] = None,
-    language: Optional[str] = None,
-    top_k: Optional[int] = None,
-    mode: str = typer.Option("rag", help="rag, chapter, or auto"),
-    allow_model_mismatch: bool = False,
-) -> None:
-    try:
-        config = _config()
-        filters = SearchFilters(
-            source_id=source_id,
-            title=title,
-            source_type=source_type,
-            course=course,
-            chapter=chapter,
-            section=section,
-            tags=tags,
-            origin=origin,
-            publisher=publisher,
-            author=author,
-            url=url,
-            canonical_url=canonical_url,
-            external_id=external_id,
-            collection=collection,
-            created_at_source_after=created_at_source_after,
-            created_at_source_before=created_at_source_before,
-            updated_at_source_after=updated_at_source_after,
-            updated_at_source_before=updated_at_source_before,
-            retrieved_at_after=retrieved_at_after,
-            retrieved_at_before=retrieved_at_before,
-            page_start=page_start,
-            page_end=page_end,
-            language=language,
-        )
-        results = _context_results(question, filters, config, top_k, mode, allow_model_mismatch)
-        pack = build_context_pack(question, results, "answer")
-        client = OpenAICompatibleChatClient(config.llm)
-        if not client.available():
-            path = save_context_pack(config.data_dir / "outputs" / "context_packs", question, pack)
-            typer.echo(f"LLM disabled or API key missing. Context pack saved: {path}")
-            return
-        answer = client.complete(ANSWER_SYSTEM_PROMPT, pack)
-        path = save_markdown(config.data_dir / "outputs" / "answers", question, answer)
-        typer.echo(answer)
-        typer.echo(f"Answer saved: {path}")
-    except Exception as exc:
-        _fail(exc)
-
-
-@app.command()
-def quiz(
-    title: Optional[str] = None,
-    source_id: Optional[str] = None,
-    chapter: Optional[str] = None,
-    questions: int = 20,
-    types: str = typer.Option("mcq,short-answer,flashcard"),
-    top_k: Optional[int] = None,
-    allow_model_mismatch: bool = False,
-) -> None:
-    try:
-        config = _config()
-        prompt = f"Create {questions} quiz questions. Types: {types}."
-        filters = SearchFilters(source_id=source_id, title=title, chapter=chapter)
-        results = _context_results(prompt, filters, config, top_k, "auto", allow_model_mismatch)
-        pack = build_context_pack(prompt, results, "quiz")
-        client = OpenAICompatibleChatClient(config.llm)
-        if not client.available():
-            path = save_context_pack(config.data_dir / "outputs" / "quizzes", prompt, pack)
-            typer.echo(f"LLM disabled or API key missing. Quiz prompt saved: {path}")
-            return
-        quiz_md = client.complete(QUIZ_SYSTEM_PROMPT, pack)
-        path = save_markdown(
-            config.data_dir / "outputs" / "quizzes", title or source_id or "quiz", quiz_md
-        )
-        typer.echo(f"Quiz saved: {path}")
-    except Exception as exc:
-        _fail(exc)
-
-
 @sources_app.command("list")
 def sources_list() -> None:
     config = _config()
@@ -502,131 +391,6 @@ def chunks_show(chunk_id: str) -> None:
             typer.echo(chunk.model_dump_json(indent=2))
             return
     raise typer.Exit(code=1)
-
-
-def _context_results(
-    query: str,
-    filters: SearchFilters,
-    config: AppConfig,
-    top_k: int | None,
-    mode: str,
-    allow_model_mismatch: bool,
-) -> list[SearchResult]:
-    if mode not in {"rag", "chapter", "auto"}:
-        raise typer.BadParameter("mode must be rag, chapter, or auto")
-    if mode in {"chapter", "auto"}:
-        local = _local_filtered_chunks(config, filters)
-        if local and (mode == "chapter" or len("\n".join(c.text for c in local)) <= 120_000):
-            return [SearchResult(chunk=chunk) for chunk in local[: top_k or config.retrieval.top_k]]
-    return search_chunks(query, filters, config, top_k, None, allow_model_mismatch)
-
-
-def _local_filtered_chunks(config: AppConfig, filters: SearchFilters) -> list[Chunk]:
-    chunks = load_chunks(config.data_dir, filters.source_id)
-    out: list[Chunk] = []
-    for chunk in chunks:
-        if _matches_filters(chunk, filters):
-            out.append(chunk)
-    if out:
-        return out
-    return _markdown_context_chunks(config, filters)
-
-
-def _markdown_context_chunks(config: AppConfig, filters: SearchFilters) -> list[Chunk]:
-    out: list[Chunk] = []
-    for manifest in list_manifests(config.data_dir):
-        if not _matches_filters(manifest, filters):
-            continue
-        root = Path(manifest.data_dir)
-        md_path = root / "markdown" / "document.md"
-        if filters.chapter or manifest.chapter:
-            chapter = filters.chapter or manifest.chapter
-            chapter_path = root / "markdown" / "chapters" / chapter_file_name(chapter or "")
-            if chapter_path.exists():
-                md_path = chapter_path
-        if not md_path.exists():
-            continue
-        text = md_path.read_text().strip()
-        if not text:
-            continue
-        out.append(
-            Chunk(
-                chunk_id=f"{manifest.source_id}_markdown_context",
-                source_id=manifest.source_id,
-                source_type=manifest.source_type,
-                title=manifest.title,
-                course=manifest.course,
-                chapter=filters.chapter or manifest.chapter,
-                tags=manifest.tags,
-                origin=manifest.origin,
-                publisher=manifest.publisher,
-                author=manifest.author,
-                created_at_source=manifest.created_at_source,
-                updated_at_source=manifest.updated_at_source,
-                retrieved_at=manifest.retrieved_at,
-                url=manifest.url,
-                canonical_url=manifest.canonical_url,
-                external_id=manifest.external_id,
-                collection=manifest.collection,
-                summary=manifest.summary,
-                section=None,
-                page_start=None,
-                page_end=None,
-                chunk_index=0,
-                text=text,
-                file_path=str(md_path),
-                extraction_method="mixed",
-                language=manifest.language,
-            )
-        )
-    return out
-
-
-def _matches_filters(item, filters: SearchFilters) -> bool:  # noqa: ANN001
-    for field in [
-        "source_id",
-        "title",
-        "source_type",
-        "course",
-        "chapter",
-        "section",
-        "language",
-        "origin",
-        "publisher",
-        "author",
-        "url",
-        "canonical_url",
-        "external_id",
-        "collection",
-    ]:
-        expected = getattr(filters, field)
-        if expected is not None and getattr(item, field, None) != expected:
-            return False
-    if filters.tags and not set(filters.tags).issubset(set(getattr(item, "tags", []))):
-        return False
-    for field in ["created_at_source", "updated_at_source", "retrieved_at"]:
-        value = getattr(item, field, None)
-        after = getattr(filters, f"{field}_after")
-        before = getattr(filters, f"{field}_before")
-        if after is not None and (value is None or _date_key(value) < _date_key(after)):
-            return False
-        if before is not None and (value is None or _date_key(value) > _date_key(before)):
-            return False
-    if filters.page_start is not None:
-        page_end = getattr(item, "page_end", None)
-        if page_end is None or page_end < filters.page_start:
-            return False
-    if filters.page_end is not None:
-        page_start = getattr(item, "page_start", None)
-        if page_start is None or page_start > filters.page_end:
-            return False
-    return True
-
-
-def _date_key(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 def _ocr_doctor_message(command: str | None) -> tuple[bool, str]:
