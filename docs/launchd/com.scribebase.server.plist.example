@@ -6,7 +6,7 @@
   <string>com.scribebase.server</string>
 
   <key>WorkingDirectory</key>
-  <string>/Users/ramtin/personal/scribebase</string>
+  <string>/Users/yourname/scribebase</string>
 
   <key>ProgramArguments</key>
   <array>
@@ -19,7 +19,7 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>SCRIBEBASE_DATA_DIR</key>
-    <string>/Users/ramtin/scribebase-data</string>
+    <string>/Users/yourname/scribebase-data</string>
     <key>SCRIBEBASE_HOST</key>
     <string>0.0.0.0</string>
     <key>SCRIBEBASE_PORT</key>
@@ -34,8 +34,8 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>/Users/ramtin/scribebase-data/logs/scribebase-server.out.log</string>
+  <string>/Users/yourname/scribebase-data/logs/scribebase-server.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/ramtin/scribebase-data/logs/scribebase-server.err.log</string>
+  <string>/Users/yourname/scribebase-data/logs/scribebase-server.err.log</string>
 </dict>
 </plist>

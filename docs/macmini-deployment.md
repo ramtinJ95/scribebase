@@ -8,6 +8,7 @@ search, and context retrieval.
 ```text
 Other agent sessions
   -> HTTP API on the Mac mini
+  -> durable ingestion queue and worker
   -> ScribeBase local data dir
   -> local Weaviate
   -> local llama.cpp embeddings
@@ -33,10 +34,8 @@ Install these on the Mac mini:
 The examples below assume:
 
 ```bash
-REPO=/Users/ramtin/personal/scribebase
-DATA=/Users/ramtin/scribebase-data
-HOST=0.0.0.0
-PORT=8765
+REPO=/Users/yourname/scribebase
+DATA=/Users/yourname/scribebase-data
 ```
 
 Change paths to match the Mac mini.
@@ -60,7 +59,7 @@ SCRIBEBASE_DATA_DIR="$DATA" uv run scribebase init --data-dir "$DATA"
 Create `$REPO/.env`:
 
 ```bash
-SCRIBEBASE_DATA_DIR=/Users/ramtin/scribebase-data
+SCRIBEBASE_DATA_DIR=/Users/yourname/scribebase-data
 SCRIBEBASE_HOST=0.0.0.0
 SCRIBEBASE_PORT=8765
 SCRIBEBASE_API_TOKEN=replace-with-a-long-random-token
@@ -152,14 +151,24 @@ The default `shell` OCR provider calls:
 
 That adapter defaults to `http://localhost:8082/v1`.
 
-## 6. Start the ScribeBase API
+## 6. Start the ScribeBase API and worker
 
-Manual start:
+Start the API:
 
 ```bash
 cd "$REPO"
 uv run scribebase serve
 ```
+
+Start the ingestion worker in another terminal with the same environment:
+
+```bash
+cd "$REPO"
+uv run scribebase worker
+```
+
+The API only enqueues ingestion jobs. Without the worker, uploads remain
+`queued`; search and context retrieval continue to work.
 
 Health check from the Mac mini:
 
@@ -184,7 +193,7 @@ Template plists live in `docs/launchd/`:
 
 Copy each template to `~/Library/LaunchAgents/`, remove `.example`, and edit:
 
-- repository path
+- repository path (use the same path in all three templates)
 - data path
 - token
 - model path
@@ -214,9 +223,9 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.worker.pl
 Inspect logs:
 
 ```bash
-tail -f /Users/ramtin/scribebase-data/logs/scribebase-server.out.log
-tail -f /Users/ramtin/scribebase-data/logs/scribebase-server.err.log
-tail -f /Users/ramtin/scribebase-data/logs/scribebase-worker.err.log
+tail -f /Users/yourname/scribebase-data/logs/scribebase-server.out.log
+tail -f /Users/yourname/scribebase-data/logs/scribebase-server.err.log
+tail -f /Users/yourname/scribebase-data/logs/scribebase-worker.err.log
 ```
 
 ## 8. Remote smoke tests
@@ -265,6 +274,7 @@ curl -s "$SCRIBEBASE_URL/search" \
 Skill templates for other sessions live in `docs/skills/`:
 
 - `scribebase-ingest`: upload a file to this Mac mini and poll the job.
+- `scribebase-article-ingest`: submit article or text JSON and poll the job.
 - `scribebase-context`: retrieve cited context packs or search snippets.
 
 Both `.agents` and Claude-compatible layouts are included:
