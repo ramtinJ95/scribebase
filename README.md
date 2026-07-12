@@ -385,6 +385,7 @@ server:
   upload_reservation_timeout_seconds: 3600
   identity_orphan_job_seconds: 300
   identity_direct_reservation_seconds: 86400
+  identity_reservation_heartbeat_seconds: 60.0
   failed_upload_retention_seconds: 604800
 ```
 

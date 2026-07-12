@@ -44,13 +44,7 @@ def manifest_path(root: Path) -> Path:
 
 def write_manifest(manifest: SourceManifest) -> Path:
     path = manifest_path(Path(manifest.data_dir))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.{uuid4().hex}.tmp")
-    try:
-        temporary.write_text(manifest.model_dump_json(indent=2))
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    _write_atomic_text(path, manifest.model_dump_json(indent=2))
     return path
 
 
@@ -223,6 +217,7 @@ def reserve_source_identity(
                     "owner_type": owner_type,
                     "source_id": source_id,
                     "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                 },
                 indent=2,
             )
@@ -239,6 +234,21 @@ def release_source_identity(data_dir: Path, identity_key: str, owner_id: str) ->
         reservation = _read_identity_reservation(path)
         if reservation is not None and reservation["owner_id"] == owner_id:
             path.unlink()
+
+
+def refresh_source_identity_reservation(data_dir: Path, identity_key: str, owner_id: str) -> bool:
+    with source_registry_lock(data_dir):
+        path = _identity_reservation_path(data_dir, identity_key)
+        if not path.exists():
+            return False
+        reservation = _read_identity_reservation(path)
+        if reservation is None or reservation["owner_id"] != owner_id:
+            return False
+        reservation["updated_at"] = datetime.now(timezone.utc).isoformat()
+        temporary = path.with_suffix(f"{path.suffix}.{uuid4().hex}.tmp")
+        temporary.write_text(json.dumps(reservation, indent=2))
+        temporary.replace(path)
+        return True
 
 
 def identity_reservation_owned(data_dir: Path, identity_key: str, owner_id: str) -> bool:
@@ -269,8 +279,8 @@ def reconcile_source_identity_reservations(
             reservation = _read_identity_reservation(path)
             if reservation is None:
                 continue
-            created = datetime.fromisoformat(reservation["created_at"])
-            age = (now - created).total_seconds()
+            updated = datetime.fromisoformat(reservation["updated_at"])
+            age = (now - updated).total_seconds()
             owner_type = reservation["owner_type"]
             expired_job = (
                 owner_type == "job"
@@ -292,7 +302,14 @@ def reconcile_source_identity_reservations(
 def _read_identity_reservation(path: Path) -> dict | None:
     try:
         payload = json.loads(path.read_text())
-        required = {"identity_key", "owner_id", "owner_type", "source_id", "created_at"}
+        required = {
+            "identity_key",
+            "owner_id",
+            "owner_type",
+            "source_id",
+            "created_at",
+            "updated_at",
+        }
         if not required.issubset(payload):
             raise ValueError(f"missing fields: {sorted(required - set(payload))}")
         return payload
@@ -390,7 +407,7 @@ def backfill_source_identities(data_dir: Path) -> int:
             manifest.content_sha256 = content_sha256
             manifest.identity_key = identity_key
             manifest.updated_at = datetime.now(timezone.utc)
-            write_manifest(manifest)
+        _install_manifest_batch(data_dir, [manifest for manifest, _, _ in pending])
     return len(pending)
 
 
@@ -423,9 +440,78 @@ def source_registry_lock(data_dir: Path):  # noqa: ANN202
     with path.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
+            _recover_manifest_transaction(data_dir)
             yield
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _install_manifest_batch(data_dir: Path, manifests: list[SourceManifest]) -> None:
+    if not manifests:
+        return
+    entries = []
+    transaction_id = uuid4().hex
+    marker = data_dir / "sources" / ".manifest-transaction.json"
+    for manifest in manifests:
+        live = manifest_path(Path(manifest.data_dir))
+        staged = live.with_suffix(f"{live.suffix}.{transaction_id}.stage")
+        backup = live.with_suffix(f"{live.suffix}.{transaction_id}.backup")
+        entries.append({"live": str(live), "staged": str(staged), "backup": str(backup)})
+    _write_atomic_text(marker, json.dumps({"entries": entries}, indent=2))
+    try:
+        for manifest, entry in zip(manifests, entries):
+            staged = Path(entry["staged"])
+            backup = Path(entry["backup"])
+            live = Path(entry["live"])
+            staged.write_text(manifest.model_dump_json(indent=2))
+            shutil.copy2(live, backup)
+        for entry in entries:
+            Path(entry["staged"]).replace(entry["live"])
+    except Exception:
+        _restore_manifest_entries(entries)
+        _cleanup_manifest_transaction(marker, entries)
+        raise
+    else:
+        _cleanup_manifest_transaction(marker, entries)
+
+
+def _recover_manifest_transaction(data_dir: Path) -> None:
+    marker = data_dir / "sources" / ".manifest-transaction.json"
+    if not marker.exists():
+        return
+    payload = json.loads(marker.read_text())
+    entries = payload["entries"]
+    _restore_manifest_entries(entries)
+    _cleanup_manifest_transaction(marker, entries)
+
+
+def _restore_manifest_entries(entries: list[dict]) -> None:
+    for entry in entries:
+        backup = Path(entry["backup"])
+        if backup.exists():
+            temporary = Path(entry["live"]).with_suffix(f".restore.{uuid4().hex}.tmp")
+            try:
+                shutil.copy2(backup, temporary)
+                temporary.replace(entry["live"])
+            finally:
+                temporary.unlink(missing_ok=True)
+
+
+def _cleanup_manifest_transaction(marker: Path, entries: list[dict]) -> None:
+    for entry in entries:
+        Path(entry["staged"]).unlink(missing_ok=True)
+        Path(entry["backup"]).unlink(missing_ok=True)
+    marker.unlink(missing_ok=True)
+
+
+def _write_atomic_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(f"{path.suffix}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(content)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _hash_file(path: Path, digest) -> None:  # noqa: ANN001

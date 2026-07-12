@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,7 @@ from scribebase.source_registry import (
     identity_reservation_owned,
     manifest_path,
     prepare_source_identity,
+    refresh_source_identity_reservation,
     release_source_identity,
     reserve_source_identity,
     source_registry_lock,
@@ -110,6 +112,12 @@ def extract_source(
         duplicate_policy=duplicate_policy,
         owner_type="job" if identity_owner else "direct",
     )
+    heartbeat_stop, heartbeat_thread = _start_identity_heartbeat(
+        config,
+        identity_key,
+        owner_id,
+        enabled=duplicate_policy == "reject",
+    )
     live_root = source_dir(config.data_dir, source_id)
     staging_data = config.data_dir / ".source-staging" / uuid4().hex
     try:
@@ -172,6 +180,9 @@ def extract_source(
             duplicate_policy,
         )
     finally:
+        if heartbeat_stop is not None and heartbeat_thread is not None:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=config.server.identity_reservation_heartbeat_seconds + 1)
         shutil.rmtree(staging_data, ignore_errors=True)
         release_source_identity(config.data_dir, identity_key, owner_id)
 
@@ -288,6 +299,27 @@ def _recover_source_publication(live_root: Path) -> None:
         backups[-1].replace(live_root)
         for backup in backups[:-1]:
             shutil.rmtree(backup, ignore_errors=True)
+
+
+def _start_identity_heartbeat(
+    config: AppConfig,
+    identity_key: str,
+    owner_id: str,
+    *,
+    enabled: bool,
+) -> tuple[threading.Event | None, threading.Thread | None]:
+    if not enabled:
+        return None, None
+    stop = threading.Event()
+
+    def refresh() -> None:
+        while not stop.wait(config.server.identity_reservation_heartbeat_seconds):
+            if not refresh_source_identity_reservation(config.data_dir, identity_key, owner_id):
+                return
+
+    thread = threading.Thread(target=refresh, name="scribebase-identity-heartbeat", daemon=True)
+    thread.start()
+    return stop, thread
 
 
 def _extract_pdf(

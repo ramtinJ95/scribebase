@@ -373,6 +373,43 @@ def test_orphan_direct_reservation_is_reconciled(tmp_path) -> None:
     assert not identity_reservation_owned(data_dir, identity, "direct-1")
 
 
+def test_backfill_rolls_back_all_manifests_on_install_failure(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    data_dir = tmp_path / "data"
+    now = datetime.now(timezone.utc)
+    for source_id, content in [("one", "first"), ("two", "second")]:
+        original = tmp_path / f"{source_id}.txt"
+        original.write_text(content)
+        write_manifest(
+            SourceManifest(
+                source_id=source_id,
+                title=source_id,
+                source_type="notes",
+                original_path=str(original),
+                data_dir=str(data_dir / "sources" / source_id),
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    real_replace = Path.replace
+    stage_replaces = 0
+
+    def fail_second_stage(path, target):  # noqa: ANN001, ANN202
+        nonlocal stage_replaces
+        if path.suffix == ".stage":
+            stage_replaces += 1
+            if stage_replaces == 2:
+                raise OSError("install failed")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_second_stage)
+
+    with pytest.raises(OSError, match="install failed"):
+        backfill_source_identities(data_dir)
+
+    assert all(manifest.identity_key is None for manifest in list_manifests(data_dir))
+    assert not (data_dir / "sources" / ".manifest-transaction.json").exists()
+
+
 def test_concurrent_create_policy_same_id_cannot_overwrite_changed_content(tmp_path) -> None:
     config = default_config()
     config.data_dir = tmp_path / "data"
