@@ -3,44 +3,56 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def extract_page_text(pdf_path: Path, page_index: int) -> str:
-    import fitz
+class PDFDocument:
+    def __init__(self, pdf_path: Path):
+        import fitz
 
-    doc = fitz.open(pdf_path)
-    try:
-        return doc[page_index].get_text("text") or ""
-    finally:
-        doc.close()
+        self.pdf_path = pdf_path
+        self.document = fitz.open(pdf_path)
 
+    def __enter__(self) -> "PDFDocument":
+        return self
 
-def extract_page_markdown(pdf_path: Path, page_index: int) -> tuple[str, str]:
-    """Return (markdown, method). Prefer PyMuPDF4LLM, fallback to PyMuPDF text."""
-    try:
-        import pymupdf4llm
+    def __exit__(self, *_args) -> None:
+        self.close()
 
-        md = pymupdf4llm.to_markdown(str(pdf_path), pages=[page_index])
-        if md and md.strip():
-            return md, "pymupdf4llm"
-    except Exception:
-        pass
-    return extract_page_text(pdf_path, page_index), "pymupdf"
+    @property
+    def page_count(self) -> int:
+        return self.document.page_count
 
+    def close(self) -> None:
+        self.document.close()
 
-def pdf_page_count(pdf_path: Path) -> int:
-    import fitz
+    def extract_page_text(self, page_index: int) -> str:
+        return self.document[page_index].get_text("text") or ""
 
-    doc = fitz.open(pdf_path)
-    try:
-        return doc.page_count
-    finally:
-        doc.close()
+    def page_has_images(self, page_index: int) -> bool:
+        return bool(self.document[page_index].get_images(full=True))
 
+    def extract_page_markdown(
+        self,
+        page_index: int,
+        fallback_text: str,
+    ) -> tuple[str, str, str | None]:
+        """Return Markdown, method, and an optional visible fallback warning."""
+        try:
+            import pymupdf4llm
 
-def page_has_images(pdf_path: Path, page_index: int) -> bool:
-    import fitz
+            markdown = pymupdf4llm.to_markdown(
+                self.document,
+                pages=[page_index],
+                use_ocr=False,
+                force_text=True,
+            )
+            if markdown and markdown.strip():
+                return markdown, "pymupdf4llm", None
+            return fallback_text, "pymupdf", "pymupdf4llm_empty"
+        except Exception as exc:
+            warning = f"pymupdf4llm_failed:{exc.__class__.__name__}"
+            return fallback_text, "pymupdf", warning
 
-    doc = fitz.open(pdf_path)
-    try:
-        return bool(doc[page_index].get_images(full=True))
-    finally:
-        doc.close()
+    def render_page(self, page_index: int, output_path: Path, dpi: int = 300) -> Path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        pixmap = self.document[page_index].get_pixmap(dpi=dpi)
+        pixmap.save(output_path)
+        return output_path

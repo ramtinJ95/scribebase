@@ -1,10 +1,11 @@
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 
 import fitz
 
 from scribebase.config import AppConfig, PDFDetectionConfig
-from scribebase.extraction import extract_source
+from scribebase.extraction import extract_source, read_page_metadata
 from scribebase.models import OCRResult
 
 
@@ -164,3 +165,68 @@ def test_auto_mixed_pdf_ocr_scanned_pages(tmp_path, monkeypatch) -> None:
     assert manifest.extraction_summary.pages_total == 4
     assert manifest.extraction_summary.pages_ocr == 1
     assert "OCR text from scanned page 4" in (root / "markdown" / "page_0004.md").read_text()
+
+
+def test_pdf_extraction_opens_document_once(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    pdf_path = tmp_path / "book.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "True text page " * 80)
+    doc.save(pdf_path)
+    doc.close()
+    real_open = fitz.open
+    opened = 0
+
+    def counted_open(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        nonlocal opened
+        opened += 1
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(fitz, "open", counted_open)
+    config = AppConfig(data_dir=tmp_path / "data")
+
+    extract_source(
+        pdf_path,
+        "Book",
+        "book",
+        None,
+        None,
+        "en",
+        "never",
+        config,
+        logging.getLogger("test"),
+    )
+
+    assert opened == 1
+
+
+def test_pymupdf4llm_failure_is_visible_in_page_metadata(tmp_path, monkeypatch, caplog) -> None:  # noqa: ANN001
+    pdf_path = tmp_path / "book.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Fallback text " * 80)
+    doc.save(pdf_path)
+    doc.close()
+    monkeypatch.setattr(
+        "pymupdf4llm.to_markdown",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("layout failed")),
+    )
+    config = AppConfig(data_dir=tmp_path / "data")
+
+    with caplog.at_level(logging.WARNING):
+        manifest = extract_source(
+            pdf_path,
+            "Book",
+            "book",
+            None,
+            None,
+            "en",
+            "never",
+            config,
+            logging.getLogger("test"),
+        )
+
+    pages = read_page_metadata(Path(manifest.data_dir))
+    assert pages[0].extraction_method == "pymupdf"
+    assert "pymupdf4llm_failed:RuntimeError" in pages[0].quality_flags
+    assert "using PyMuPDF text fallback" in caplog.text
