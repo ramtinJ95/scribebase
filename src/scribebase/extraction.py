@@ -108,6 +108,7 @@ def extract_source(
         owner_id=owner_id,
         source_id=source_id,
         duplicate_policy=duplicate_policy,
+        owner_type="job" if identity_owner else "direct",
     )
     live_root = source_dir(config.data_dir, source_id)
     staging_data = config.data_dir / ".source-staging" / uuid4().hex
@@ -255,7 +256,10 @@ def _publish_staged_source(
             duplicate = find_source(data_dir, manifest.source_id) if live_root.exists() else None
         except (FileNotFoundError, ValueError):
             duplicate = None
-        if duplicate is not None and duplicate.identity_key != identity_key:
+        if duplicate is not None and (
+            duplicate.identity_key != identity_key
+            or duplicate.content_sha256 != manifest.content_sha256
+        ):
             raise ValueError(
                 f"Source id already exists with different content: {manifest.source_id}"
             )

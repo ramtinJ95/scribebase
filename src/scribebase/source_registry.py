@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import shutil
+import warnings
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -195,28 +196,39 @@ def reserve_source_identity(
     owner_id: str,
     source_id: str,
     duplicate_policy: str,
-) -> None:
+    owner_type: str = "direct",
+) -> bool:
     if duplicate_policy == "create":
-        return
+        return False
     with source_registry_lock(data_dir):
         duplicate = find_source_by_identity(data_dir, identity_key)
         if duplicate is not None and duplicate.source_id != source_id:
             raise DuplicateSourceError(duplicate.source_id, identity_key)
         path = _identity_reservation_path(data_dir, identity_key)
         if path.exists():
-            reservation = json.loads(path.read_text())
-            if reservation["owner_id"] != owner_id:
-                raise DuplicateSourceError(reservation["source_id"], identity_key)
-            return
+            reservation = _read_identity_reservation(path)
+            if reservation is None:
+                path = _identity_reservation_path(data_dir, identity_key)
+            else:
+                if reservation["owner_id"] != owner_id:
+                    raise DuplicateSourceError(reservation["source_id"], identity_key)
+                return False
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(f"{path.suffix}.{uuid4().hex}.tmp")
         temporary.write_text(
             json.dumps(
-                {"identity_key": identity_key, "owner_id": owner_id, "source_id": source_id},
+                {
+                    "identity_key": identity_key,
+                    "owner_id": owner_id,
+                    "owner_type": owner_type,
+                    "source_id": source_id,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
                 indent=2,
             )
         )
         temporary.replace(path)
+        return True
 
 
 def release_source_identity(data_dir: Path, identity_key: str, owner_id: str) -> None:
@@ -224,8 +236,8 @@ def release_source_identity(data_dir: Path, identity_key: str, owner_id: str) ->
         path = _identity_reservation_path(data_dir, identity_key)
         if not path.exists():
             return
-        reservation = json.loads(path.read_text())
-        if reservation["owner_id"] == owner_id:
+        reservation = _read_identity_reservation(path)
+        if reservation is not None and reservation["owner_id"] == owner_id:
             path.unlink()
 
 
@@ -233,12 +245,62 @@ def identity_reservation_owned(data_dir: Path, identity_key: str, owner_id: str)
     path = _identity_reservation_path(data_dir, identity_key)
     if not path.exists():
         return False
-    return json.loads(path.read_text())["owner_id"] == owner_id
+    reservation = _read_identity_reservation(path)
+    return reservation is not None and reservation["owner_id"] == owner_id
 
 
 def _identity_reservation_path(data_dir: Path, identity_key: str) -> Path:
     digest = hashlib.sha256(identity_key.encode()).hexdigest()
     return data_dir / "sources" / ".identity-reservations" / f"{digest}.json"
+
+
+def reconcile_source_identity_reservations(
+    data_dir: Path,
+    active_job_ids: set[str],
+    *,
+    orphan_job_seconds: int,
+    direct_seconds: int,
+) -> int:
+    removed = 0
+    now = datetime.now(timezone.utc)
+    with source_registry_lock(data_dir):
+        directory = data_dir / "sources" / ".identity-reservations"
+        for path in directory.glob("*.json"):
+            reservation = _read_identity_reservation(path)
+            if reservation is None:
+                continue
+            created = datetime.fromisoformat(reservation["created_at"])
+            age = (now - created).total_seconds()
+            owner_type = reservation["owner_type"]
+            expired_job = (
+                owner_type == "job"
+                and reservation["owner_id"] not in active_job_ids
+                and age >= orphan_job_seconds
+            )
+            expired_direct = owner_type == "direct" and age >= direct_seconds
+            published = find_source_by_identity(data_dir, reservation["identity_key"])
+            if (
+                expired_job
+                or expired_direct
+                or (published is not None and published.source_id == reservation["source_id"])
+            ):
+                path.unlink(missing_ok=True)
+                removed += 1
+    return removed
+
+
+def _read_identity_reservation(path: Path) -> dict | None:
+    try:
+        payload = json.loads(path.read_text())
+        required = {"identity_key", "owner_id", "owner_type", "source_id", "created_at"}
+        if not required.issubset(payload):
+            raise ValueError(f"missing fields: {sorted(required - set(payload))}")
+        return payload
+    except Exception:
+        quarantine = path.with_suffix(f".corrupt.{int(datetime.now().timestamp())}")
+        path.replace(quarantine)
+        warnings.warn(f"Quarantined corrupt identity reservation: {path}", stacklevel=2)
+        return None
 
 
 def hash_source(path: Path) -> str:
@@ -279,6 +341,29 @@ def normalize_url(value: str) -> str:
 
 
 def backfill_source_identities(data_dir: Path) -> int:
+    snapshot = list_manifests(data_dir)
+    computed: dict[str, tuple[datetime, str, str, str]] = {}
+    for manifest in snapshot:
+        if manifest.identity_key and manifest.content_sha256:
+            continue
+        original = Path(manifest.original_path)
+        if not original.exists():
+            continue
+        content_sha256 = manifest.content_sha256 or hash_source(original)
+        identity_key = source_identity_key(
+            content_sha256=content_sha256,
+            origin=manifest.origin,
+            canonical_url=manifest.canonical_url,
+            url=manifest.url,
+            external_id=manifest.external_id if manifest.origin else None,
+        )
+        computed[manifest.source_id] = (
+            manifest.updated_at,
+            manifest.original_path,
+            identity_key,
+            content_sha256,
+        )
+
     with source_registry_lock(data_dir):
         pending: list[tuple[SourceManifest, str, str]] = []
         identities: dict[str, list[str]] = {}
@@ -287,17 +372,14 @@ def backfill_source_identities(data_dir: Path) -> int:
                 identity_key = manifest.identity_key
                 content_sha256 = manifest.content_sha256
             else:
-                original = Path(manifest.original_path)
-                if not original.exists():
+                prepared = computed.get(manifest.source_id)
+                if prepared is None:
+                    if Path(manifest.original_path).exists():
+                        raise RuntimeError("Source registry changed during backfill; retry")
                     continue
-                content_sha256 = manifest.content_sha256 or hash_source(original)
-                identity_key = source_identity_key(
-                    content_sha256=content_sha256,
-                    origin=manifest.origin,
-                    canonical_url=manifest.canonical_url,
-                    url=manifest.url,
-                    external_id=manifest.external_id if manifest.origin else None,
-                )
+                prior_updated, prior_original, identity_key, content_sha256 = prepared
+                if manifest.updated_at != prior_updated or manifest.original_path != prior_original:
+                    raise RuntimeError("Source registry changed during backfill; retry")
                 pending.append((manifest, identity_key, content_sha256))
             identities.setdefault(identity_key, []).append(manifest.source_id)
         collisions = {key: ids for key, ids in identities.items() if len(ids) > 1}

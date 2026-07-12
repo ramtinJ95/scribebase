@@ -383,6 +383,8 @@ server:
   worker_heartbeat_seconds: 2.0
   worker_stale_seconds: 15.0
   upload_reservation_timeout_seconds: 3600
+  identity_orphan_job_seconds: 300
+  identity_direct_reservation_seconds: 86400
   failed_upload_retention_seconds: 604800
 ```
 

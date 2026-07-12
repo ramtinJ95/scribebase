@@ -100,6 +100,8 @@ class ServerConfig(BaseModel):
     worker_heartbeat_seconds: float = Field(default=2.0, gt=0)
     worker_stale_seconds: float = Field(default=15.0, gt=0)
     upload_reservation_timeout_seconds: int = Field(default=60 * 60, gt=0)
+    identity_orphan_job_seconds: int = Field(default=5 * 60, ge=0)
+    identity_direct_reservation_seconds: int = Field(default=24 * 60 * 60, gt=0)
     failed_upload_retention_seconds: int = Field(default=7 * 24 * 60 * 60, ge=0)
 
 

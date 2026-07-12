@@ -31,6 +31,7 @@ from scribebase.source_registry import (
     DuplicateSourceError,
     find_source,
     prepare_source_identity,
+    reconcile_source_identity_reservations,
     release_source_identity,
     reserve_source_identity,
     slugify,
@@ -202,6 +203,7 @@ def create_ingest_job(
             owner_id=job_id,
             source_id=planned_source_id,
             duplicate_policy=duplicate_policy,
+            owner_type="job",
         )
         job = IngestJob(
             job_id=job_id,
@@ -399,13 +401,15 @@ def claim_next_job(data_dir: Path, worker_id: str) -> IngestJob | None:
 
 def retry_job(config: AppConfig, job_id: str) -> IngestJob:
     job = read_job(config.data_dir, job_id)
+    reservation_created = False
     if job.identity_key and job.source_id:
-        reserve_source_identity(
+        reservation_created = reserve_source_identity(
             config.data_dir,
             job.identity_key,
             owner_id=job.job_id,
             source_id=job.source_id,
             duplicate_policy=job.duplicate_policy,
+            owner_type="job",
         )
     try:
         with _queue_lock(config.data_dir):
@@ -432,7 +436,7 @@ def retry_job(config: AppConfig, job_id: str) -> IngestJob:
             write_job(config.data_dir, job)
             return job
     except Exception:
-        if job.identity_key:
+        if job.identity_key and reservation_created:
             release_source_identity(config.data_dir, job.identity_key, job.job_id)
         raise
 
@@ -445,7 +449,11 @@ def run_worker(config: AppConfig, once: bool = False, poll_seconds: float | None
         with _worker_heartbeat(config, worker_id):
             reconcile_queue_storage(config)
             recover_interrupted_jobs(config.data_dir)
+            last_reconcile = time.monotonic()
             while True:
+                if time.monotonic() - last_reconcile >= 60:
+                    reconcile_queue_storage(config)
+                    last_reconcile = time.monotonic()
                 job = claim_next_job(config.data_dir, worker_id)
                 if job is not None:
                     run_ingest_job(job.job_id, job.claim_token or "", config)
@@ -611,12 +619,14 @@ def _upload_bytes(data_dir: Path) -> int:
 
 def reconcile_queue_storage(config: AppConfig) -> None:
     now = time.time()
+    active_job_ids: set[str] = set()
     with _queue_lock(config.data_dir):
         reservations = list(_reservation_dir(config.data_dir).glob("*.json"))
         for path in reservations:
             if now - path.stat().st_mtime > config.server.upload_reservation_timeout_seconds:
                 path.unlink(missing_ok=True)
         jobs = list_jobs(config.data_dir)
+        active_job_ids = {job.job_id for job in jobs if job.status in {"queued", "running"}}
         referenced = {Path(job.upload_path).resolve() for job in jobs}
         for job in jobs:
             upload = Path(job.upload_path)
@@ -633,6 +643,12 @@ def reconcile_queue_storage(config: AppConfig) -> None:
                 continue
             if now - upload.stat().st_mtime >= config.server.failed_upload_retention_seconds:
                 upload.unlink(missing_ok=True)
+    reconcile_source_identity_reservations(
+        config.data_dir,
+        active_job_ids,
+        orphan_job_seconds=config.server.identity_orphan_job_seconds,
+        direct_seconds=config.server.identity_direct_reservation_seconds,
+    )
 
 
 @contextmanager

@@ -14,7 +14,10 @@ from scribebase.source_registry import (
     hash_source,
     normalize_url,
     prepare_source_identity,
+    reconcile_source_identity_reservations,
     read_manifest,
+    reserve_source_identity,
+    identity_reservation_owned,
     write_manifest,
     list_manifests,
 )
@@ -323,3 +326,76 @@ def test_backfill_aborts_before_writing_identity_collisions(tmp_path) -> None:
         backfill_source_identities(data_dir)
 
     assert all(manifest.identity_key is None for manifest in list_manifests(data_dir))
+
+
+def test_same_owner_reservation_reports_who_created_it(tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    identity = "sha256:abc"
+
+    assert reserve_source_identity(
+        data_dir,
+        identity,
+        owner_id="job-1",
+        source_id="source-1",
+        duplicate_policy="reject",
+        owner_type="job",
+    )
+    assert not reserve_source_identity(
+        data_dir,
+        identity,
+        owner_id="job-1",
+        source_id="source-1",
+        duplicate_policy="reject",
+        owner_type="job",
+    )
+    assert identity_reservation_owned(data_dir, identity, "job-1")
+
+
+def test_orphan_direct_reservation_is_reconciled(tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    identity = "sha256:abc"
+    reserve_source_identity(
+        data_dir,
+        identity,
+        owner_id="direct-1",
+        source_id="source-1",
+        duplicate_policy="reject",
+    )
+
+    removed = reconcile_source_identity_reservations(
+        data_dir,
+        set(),
+        orphan_job_seconds=0,
+        direct_seconds=0,
+    )
+
+    assert removed == 1
+    assert not identity_reservation_owned(data_dir, identity, "direct-1")
+
+
+def test_concurrent_create_policy_same_id_cannot_overwrite_changed_content(tmp_path) -> None:
+    config = default_config()
+    config.data_dir = tmp_path / "data"
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("one")
+    second.write_text("two")
+
+    def ingest(path):  # noqa: ANN001, ANN202
+        try:
+            return _extract(
+                path,
+                "Source",
+                config,
+                source_id="shared-source",
+                canonical_url="https://example.com/source",
+                duplicate_policy="create",
+            ).content_sha256
+        except ValueError:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(ingest, [first, second]))
+
+    assert results.count("conflict") == 1
+    assert len(list_manifests(config.data_dir)) == 1
