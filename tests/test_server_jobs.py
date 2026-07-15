@@ -403,6 +403,39 @@ def test_worker_waits_without_heartbeat_while_recovery_dependency_is_down(
     assert not (tmp_path / "jobs" / ".worker-heartbeat").exists()
 
 
+def test_worker_retries_when_weaviate_drops_during_recovery(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    pending = iter([True, True, False])
+    recovery_attempts = []
+    sleeps = []
+
+    monkeypatch.setattr(
+        "scribebase.server_jobs.index_recovery_pending", lambda _data_dir: next(pending)
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs._weaviate_ready", lambda _config: (True, "ready")
+    )
+
+    def recover(*_args) -> None:  # noqa: ANN002
+        recovery_attempts.append(True)
+        if len(recovery_attempts) == 1:
+            raise DependencyUnavailableError("connection dropped")
+
+    monkeypatch.setattr("scribebase.server_jobs.recover_index_transactions", recover)
+    monkeypatch.setattr("scribebase.server_jobs.time.sleep", sleeps.append)
+    monkeypatch.setattr(
+        "scribebase.server_jobs.claim_next_job",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("worker loop reached")),
+    )
+
+    with pytest.raises(RuntimeError, match="worker loop reached"):
+        run_worker(config, once=False)
+
+    assert len(recovery_attempts) == 2
+    assert sleeps == [config.server.worker_dependency_retry_seconds]
+
+
 def test_worker_lock_rejects_second_worker(tmp_path) -> None:
     with _worker_lock(tmp_path):
         with pytest.raises(RuntimeError, match="already running"):

@@ -483,7 +483,14 @@ def run_worker(config: AppConfig, once: bool = False, poll_seconds: float | None
                 continue
             # Journal/artifact errors are permanent until an operator intervenes.
             # Let them fail startup instead of advertising a healthy idle worker.
-            recover_index_transactions(config, logger)
+            try:
+                recover_index_transactions(config, logger)
+            except DependencyUnavailableError as exc:
+                logger.warning("Index recovery lost Weaviate; waiting to retry: %s", exc)
+                if once:
+                    return
+                time.sleep(config.server.worker_dependency_retry_seconds)
+                continue
         with _worker_heartbeat(config, worker_id):
             reconcile_queue_storage(config)
             recover_interrupted_jobs(config.data_dir)
