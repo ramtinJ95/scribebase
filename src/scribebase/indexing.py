@@ -425,11 +425,11 @@ def _validate_snapshot(path: Path, source_id: str) -> None:
         raise RuntimeError(f"Invalid index recovery snapshot: {path}: {exc}") from exc
 
 
-def _validate_staged_index_files(transaction: dict) -> None:
+def _validate_staged_index_files(transaction: dict) -> set[str]:
     source_id = transaction["source_id"]
     chunks_path = Path(transaction["staged_chunks"])
     manifest_path = Path(transaction["staged_manifest"])
-    count = 0
+    chunk_ids: set[str] = set()
     try:
         for row in _iter_jsonl(chunks_path):
             chunk = Chunk.model_validate(row)
@@ -437,8 +437,10 @@ def _validate_staged_index_files(transaction: dict) -> None:
                 raise ValueError(
                     f"staged chunk {chunk.chunk_id!r} belongs to {chunk.source_id!r}"
                 )
-            count += 1
-        if count == 0:
+            if chunk.chunk_id in chunk_ids:
+                raise ValueError(f"duplicate staged chunk id: {chunk.chunk_id}")
+            chunk_ids.add(chunk.chunk_id)
+        if not chunk_ids:
             raise ValueError("staged chunk file is empty")
         manifest = SourceManifest.model_validate_json(manifest_path.read_text())
         if manifest.source_id != source_id:
@@ -447,6 +449,7 @@ def _validate_staged_index_files(transaction: dict) -> None:
             )
     except Exception as exc:
         raise RuntimeError(f"Invalid staged index recovery files for {source_id}: {exc}") from exc
+    return chunk_ids
 
 
 def _iter_jsonl(path: Path) -> Iterator[dict]:
@@ -496,15 +499,44 @@ def _recover_index_transactions(config: AppConfig, logger) -> None:  # noqa: ANN
             _finish_incremental_transaction(incremental, transaction)
             logger.warning("Restored interrupted index update for %s", transaction["source_id"])
         elif state == "remote_committed":
-            _validate_staged_index_files(transaction)
-            _install_staged_files(
-                [
-                    (Path(transaction["staged_chunks"]), Path(transaction["live_chunks"])),
-                    (Path(transaction["staged_manifest"]), Path(transaction["live_manifest"])),
-                ]
-            )
+            expected_chunk_ids = _validate_staged_index_files(transaction)
+            store = WeaviateStore(config.weaviate)
+            try:
+                remote_chunk_ids = {
+                    chunk.chunk_id
+                    for chunk, _ in store.iter_source_chunks(transaction["source_id"])
+                }
+                if remote_chunk_ids != expected_chunk_ids:
+                    _restore_source(
+                        store,
+                        transaction["source_id"],
+                        Path(transaction["snapshot"]),
+                        config.embedding.batch_size,
+                    )
+                    logger.warning(
+                        "Restored interrupted index update for %s because the remote "
+                        "generation was incomplete",
+                        transaction["source_id"],
+                    )
+                else:
+                    _install_staged_files(
+                        [
+                            (
+                                Path(transaction["staged_chunks"]),
+                                Path(transaction["live_chunks"]),
+                            ),
+                            (
+                                Path(transaction["staged_manifest"]),
+                                Path(transaction["live_manifest"]),
+                            ),
+                        ]
+                    )
+                    logger.warning(
+                        "Finished interrupted index update for %s", transaction["source_id"]
+                    )
+            finally:
+                store.close()
             _finish_incremental_transaction(incremental, transaction)
-            logger.warning("Finished interrupted index update for %s", transaction["source_id"])
         else:
             raise RuntimeError(f"Unknown incremental index transaction state: {state!r}")
 
