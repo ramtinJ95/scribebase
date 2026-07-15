@@ -13,12 +13,19 @@ from weaviate.exceptions import (
 _OPTIONAL_TRANSIENT_WEAVIATE_ERRORS = tuple(
     error_type
     for name in (
-        "WeaviateBatchError",
         "WeaviateBatchFailedToReestablishStreamError",
-        "WeaviateBatchSendError",
-        "WeaviateBatchStreamError",
         "WeaviateGRPCUnavailableError",
         "WeaviateStartUpError",
+    )
+    if isinstance(error_type := getattr(weaviate_exceptions, name, None), type)
+)
+
+_OPTIONAL_CONDITIONAL_BATCH_ERRORS = tuple(
+    error_type
+    for name in (
+        "WeaviateBatchError",
+        "WeaviateBatchSendError",
+        "WeaviateBatchStreamError",
     )
     if isinstance(error_type := getattr(weaviate_exceptions, name, None), type)
 )
@@ -34,6 +41,7 @@ _TRANSIENT_BATCH_MESSAGE_MARKERS = (
     "StatusCode.UNAVAILABLE",
     "StatusCode.DEADLINE_EXCEEDED",
     "Connection refused",
+    "connection lost",
     "connection reset",
     "failed to connect",
     "service unavailable",
@@ -50,6 +58,8 @@ def as_dependency_unavailable(exc: Exception) -> DependencyUnavailableError | No
         return exc
     if isinstance(exc, _TRANSIENT_DEPENDENCY_ERRORS):
         return DependencyUnavailableError(str(exc).strip() or exc.__class__.__name__)
+    if isinstance(exc, _OPTIONAL_CONDITIONAL_BATCH_ERRORS):
+        return dependency_unavailable_from_messages([str(exc)])
     if isinstance(exc, UnexpectedStatusCodeError) and (
         exc.status_code >= 500 or exc.status_code in {408, 425, 429}
     ):

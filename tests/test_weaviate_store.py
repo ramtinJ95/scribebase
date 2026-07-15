@@ -257,6 +257,18 @@ def test_transient_weaviate_errors_are_classified_as_dependency_outages(error) -
     assert isinstance(as_dependency_unavailable(error), DependencyUnavailableError)
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        WeaviateBatchError("invalid property in batch object"),
+        WeaviateBatchSendError("schema validation failed"),
+        WeaviateBatchStreamError("StatusCode.INVALID_ARGUMENT"),
+    ],
+)
+def test_deterministic_generic_batch_errors_are_not_retryable(error) -> None:  # noqa: ANN001
+    assert as_dependency_unavailable(error) is None
+
+
 def test_batch_stream_failure_is_typed_at_store_boundary() -> None:
     error = WeaviateBatchFailedToReestablishStreamError("service restarting")
 
