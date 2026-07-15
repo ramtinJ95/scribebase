@@ -469,6 +469,34 @@ def test_startup_keeps_published_source_and_removes_old_backup(tmp_path) -> None
     assert not (data_dir / "sources" / ".manifest-transaction.json").exists()
 
 
+def test_startup_keeps_running_when_old_source_backup_cannot_be_removed(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    data_dir = tmp_path / "data"
+    sources = data_dir / "sources"
+    live = sources / "source-1"
+    backup = sources / ".source-1.backup.transaction"
+    live.mkdir(parents=True)
+    backup.mkdir(parents=True)
+    (live / "generation").write_text("new")
+    warnings = []
+
+    class Logger:
+        def warning(self, message: str) -> None:
+            warnings.append(message)
+
+    monkeypatch.setattr(
+        "scribebase.extraction.durable_rmtree",
+        lambda _path: (_ for _ in ()).throw(OSError("permission denied")),
+    )
+
+    assert recover_source_publications(data_dir, Logger()) == 1
+
+    assert (live / "generation").read_text() == "new"
+    assert backup.exists()
+    assert "old backup" in warnings[0]
+
+
 def test_concurrent_create_policy_same_id_cannot_overwrite_changed_content(tmp_path) -> None:
     config = default_config()
     config.data_dir = tmp_path / "data"

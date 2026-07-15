@@ -470,7 +470,7 @@ def run_worker(config: AppConfig, once: bool = False, poll_seconds: float | None
     worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:8]}"
     logger = setup_logging(config.data_dir)
     with _worker_lock(config.data_dir):
-        recovered_sources = recover_source_publications(config.data_dir)
+        recovered_sources = recover_source_publications(config.data_dir, logger)
         if recovered_sources:
             logger.warning("Recovered %s interrupted source publications", recovered_sources)
         while index_recovery_pending(config.data_dir):

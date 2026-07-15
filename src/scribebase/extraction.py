@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import threading
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -118,7 +119,7 @@ def extract_source(
     staging_data = config.data_dir / ".source-staging" / uuid4().hex
     try:
         with source_registry_lock(config.data_dir):
-            _recover_source_publication(live_root)
+            _recover_source_publication(live_root, logger)
         if live_root.exists():
             try:
                 existing = find_source(config.data_dir, source_id)
@@ -296,19 +297,30 @@ def _publish_staged_source(
     return manifest
 
 
-def _recover_source_publication(live_root: Path) -> None:
+def _recover_source_publication(live_root: Path, logger=None) -> None:  # noqa: ANN001
     backups = sorted(live_root.parent.glob(f".{live_root.name}.backup.*"))
     if live_root.exists():
         for backup in backups:
-            durable_rmtree(backup)
+            _remove_redundant_source_backup(backup, live_root, logger)
         return
     if backups:
         durable_replace(backups[-1], live_root)
         for backup in backups[:-1]:
-            durable_rmtree(backup)
+            _remove_redundant_source_backup(backup, live_root, logger)
 
 
-def recover_source_publications(data_dir: Path) -> int:
+def _remove_redundant_source_backup(backup: Path, live_root: Path, logger=None) -> None:  # noqa: ANN001
+    try:
+        durable_rmtree(backup)
+    except OSError as exc:
+        message = f"Live source {live_root.name} is valid but old backup {backup} remains: {exc}"
+        if logger is not None:
+            logger.warning(message)
+        else:
+            warnings.warn(message, stacklevel=2)
+
+
+def recover_source_publications(data_dir: Path, logger=None) -> int:  # noqa: ANN001
     """Settle source-directory renames interrupted by process or machine loss."""
     sources = data_dir / "sources"
     if not sources.exists():
@@ -325,7 +337,7 @@ def recover_source_publications(data_dir: Path) -> int:
                 live_root = source_dir(data_dir, source_id)
             except ValueError:
                 continue
-            _recover_source_publication(live_root)
+            _recover_source_publication(live_root, logger)
             recovered += 1
     return recovered
 
