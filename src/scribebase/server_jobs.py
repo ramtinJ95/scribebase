@@ -629,7 +629,7 @@ def _weaviate_ready(config: AppConfig) -> tuple[bool, str]:
     try:
         if not store.is_ready():
             return False, f"Weaviate is not ready at {config.weaviate.url}"
-    except Exception as exc:
+    except DependencyUnavailableError as exc:
         return False, f"Weaviate is unavailable: {exc}"
     finally:
         store.close()

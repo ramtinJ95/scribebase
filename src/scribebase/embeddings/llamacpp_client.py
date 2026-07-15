@@ -28,6 +28,8 @@ class LlamaCppEmbeddingClient:
                 timeout=self.config.timeout_seconds,
             )
             response.raise_for_status()
+        except httpx.UnsupportedProtocol:
+            raise
         except httpx.TransportError as exc:
             raise DependencyUnavailableError(f"Embedding service unavailable: {exc}") from exc
         except httpx.HTTPStatusError as exc:
@@ -61,12 +63,14 @@ class LlamaCppEmbeddingClient:
                 model_ids = _model_ids(response.json())
                 suffix = f"; server models={', '.join(model_ids[:3])}" if model_ids else ""
                 return True, f"/v1/models reachable; configured model={self.config.model}{suffix}"
-        except Exception:
+        except httpx.UnsupportedProtocol:
+            raise
+        except httpx.TransportError:
             pass
         try:
             dim = self.detect_dimension()
             return True, f"embeddings reachable, dimension={dim}"
-        except Exception as exc:
+        except DependencyUnavailableError as exc:
             return False, str(exc)
 
 

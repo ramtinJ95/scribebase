@@ -522,6 +522,29 @@ def test_worker_waits_without_heartbeat_while_recovery_dependency_is_down(
     assert not (tmp_path / "jobs" / ".worker-heartbeat").exists()
 
 
+def test_weaviate_preflight_propagates_permanent_configuration_error(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    (tmp_path / ".index-transaction.json").write_text("pending")
+
+    class Store:
+        def __init__(self, _config) -> None:  # noqa: ANN001
+            pass
+
+        def is_ready(self) -> bool:
+            raise ValueError("invalid literal for int()")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("scribebase.server_jobs.WeaviateStore", Store)
+
+    with pytest.raises(ValueError, match="invalid literal"):
+        run_worker(config, once=True)
+
+
 def test_worker_retries_when_weaviate_drops_during_recovery(tmp_path, monkeypatch) -> None:  # noqa: ANN001
     config = default_config()
     config.data_dir = tmp_path

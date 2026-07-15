@@ -55,3 +55,13 @@ def test_transport_failure_is_typed_as_dependency_unavailable(monkeypatch) -> No
 
     with pytest.raises(DependencyUnavailableError, match="connection refused"):
         LlamaCppEmbeddingClient(EmbeddingConfig()).embed_texts(["text"])
+
+
+def test_health_check_propagates_malformed_embedding_url(monkeypatch) -> None:  # noqa: ANN001
+    def invalid_url(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise httpx.UnsupportedProtocol("missing URL scheme")
+
+    monkeypatch.setattr("scribebase.embeddings.llamacpp_client.httpx.get", invalid_url)
+
+    with pytest.raises(httpx.UnsupportedProtocol, match="missing URL scheme"):
+        LlamaCppEmbeddingClient(EmbeddingConfig()).check_health()
