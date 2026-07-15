@@ -263,10 +263,9 @@ def create_ingest_job(
             try:
                 _release_reservation_unlocked(config.data_dir, job_id)
             except OSError as exc:
-                warnings.warn(
+                _warn_nonfatal(
                     f"Queued job {job_id}, but upload reservation cleanup could not be "
                     f"confirmed: {exc}",
-                    stacklevel=2,
                 )
         return job
     except Exception:
@@ -573,6 +572,14 @@ def _safe_filename(filename: str) -> str:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _warn_nonfatal(message: str) -> None:
+    """Report post-commit cleanup trouble without rolling back committed state."""
+    try:
+        warnings.warn(message, stacklevel=3)
+    except Exception:
+        pass
 
 
 def worker_status(config: AppConfig) -> tuple[bool, str]:
