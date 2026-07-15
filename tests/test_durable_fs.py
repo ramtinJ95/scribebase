@@ -1,6 +1,11 @@
 import pytest
 
-from scribebase.durable_fs import atomic_write, atomic_write_text, sync_file_descriptor
+from scribebase.durable_fs import (
+    atomic_write,
+    atomic_write_text,
+    durable_mkdir,
+    sync_file_descriptor,
+)
 
 
 def test_atomic_write_syncs_file_and_parent_directory(tmp_path, monkeypatch) -> None:  # noqa: ANN001
@@ -68,3 +73,16 @@ def test_fsync_is_used_when_fullfsync_is_unavailable(monkeypatch) -> None:  # no
     sync_file_descriptor(7)
 
     assert calls == [7]
+
+
+def test_durable_mkdir_syncs_each_new_parent_entry(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    synced = []
+    monkeypatch.setattr(
+        "scribebase.durable_fs.sync_directory", lambda path: synced.append(path)
+    )
+
+    target = tmp_path / "first" / "second"
+    durable_mkdir(target)
+
+    assert target.is_dir()
+    assert synced == [tmp_path, tmp_path / "first"]

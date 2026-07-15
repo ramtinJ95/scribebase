@@ -8,7 +8,7 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, model_validator
 
-from scribebase.durable_fs import atomic_write_text
+from scribebase.durable_fs import atomic_write_text, durable_mkdir
 
 
 CONFIG_ENV = "SCRIBEBASE_CONFIG"
@@ -202,9 +202,9 @@ def write_default_config(
 ) -> Path:
     config = default_config()
     config.data_dir = data_dir
-    data_dir.mkdir(parents=True, exist_ok=True)
+    durable_mkdir(data_dir)
     path = config_path or data_dir / "config.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    durable_mkdir(path.parent)
     if path.exists() and not overwrite:
         return path
     atomic_write_text(path, config_to_yaml(config))

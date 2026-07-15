@@ -16,6 +16,7 @@ from .durable_fs import (
     atomic_write_jsonl,
     atomic_write_text,
     durable_copy,
+    durable_mkdir,
     durable_replace,
     durable_unlink,
 )
@@ -439,7 +440,7 @@ def _existing_identity_key(manifest: SourceManifest) -> str | None:
 @contextmanager
 def source_registry_lock(data_dir: Path):  # noqa: ANN202
     path = data_dir / "sources" / ".registry.lock"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    durable_mkdir(path.parent)
     with path.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:

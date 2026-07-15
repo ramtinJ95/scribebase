@@ -31,6 +31,25 @@ def sync_file_descriptor(descriptor: int) -> None:
         os.fsync(descriptor)
 
 
+def durable_mkdir(path: Path) -> None:
+    """Create missing directory ancestry and persist every new directory entry."""
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            raise FileNotFoundError(f"No existing ancestor for directory: {path}")
+        current = parent
+    if not current.is_dir():
+        raise NotADirectoryError(current)
+    for directory in reversed(missing):
+        directory.mkdir(exist_ok=True)
+        if not directory.is_dir():
+            raise NotADirectoryError(directory)
+        sync_directory(directory.parent)
+
+
 def sync_tree(root: Path) -> None:
     """Persist every file and directory in a completed staging tree."""
     for path in sorted(root.rglob("*")):
@@ -71,7 +90,7 @@ def durable_rmtree(path: Path) -> None:
 
 
 def atomic_write(path: Path, writer: Callable[[BinaryIO], None]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    durable_mkdir(path.parent)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
         with temporary.open("wb") as output:
