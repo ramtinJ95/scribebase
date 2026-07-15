@@ -425,11 +425,11 @@ def _validate_snapshot(path: Path, source_id: str) -> None:
         raise RuntimeError(f"Invalid index recovery snapshot: {path}: {exc}") from exc
 
 
-def _validate_staged_index_files(transaction: dict) -> set[str]:
+def _validate_staged_index_files(transaction: dict) -> dict[str, dict]:
     source_id = transaction["source_id"]
     chunks_path = Path(transaction["staged_chunks"])
     manifest_path = Path(transaction["staged_manifest"])
-    chunk_ids: set[str] = set()
+    chunks: dict[str, dict] = {}
     try:
         for row in _iter_jsonl(chunks_path):
             chunk = Chunk.model_validate(row)
@@ -437,10 +437,10 @@ def _validate_staged_index_files(transaction: dict) -> set[str]:
                 raise ValueError(
                     f"staged chunk {chunk.chunk_id!r} belongs to {chunk.source_id!r}"
                 )
-            if chunk.chunk_id in chunk_ids:
+            if chunk.chunk_id in chunks:
                 raise ValueError(f"duplicate staged chunk id: {chunk.chunk_id}")
-            chunk_ids.add(chunk.chunk_id)
-        if not chunk_ids:
+            chunks[chunk.chunk_id] = _recovery_chunk_content(chunk)
+        if not chunks:
             raise ValueError("staged chunk file is empty")
         manifest = SourceManifest.model_validate_json(manifest_path.read_text())
         if manifest.source_id != source_id:
@@ -449,7 +449,14 @@ def _validate_staged_index_files(transaction: dict) -> set[str]:
             )
     except Exception as exc:
         raise RuntimeError(f"Invalid staged index recovery files for {source_id}: {exc}") from exc
-    return chunk_ids
+    return chunks
+
+
+def _recovery_chunk_content(chunk: Chunk) -> dict:
+    # Weaviate assigns created_at while writing and does not persist
+    # chunker_version in the current schema. Every other Chunk field is
+    # round-tripped and must match before local metadata can be published.
+    return chunk.model_dump(mode="json", exclude={"created_at", "chunker_version"})
 
 
 def _iter_jsonl(path: Path) -> Iterator[dict]:
@@ -499,14 +506,14 @@ def _recover_index_transactions(config: AppConfig, logger) -> None:  # noqa: ANN
             _finish_incremental_transaction(incremental, transaction)
             logger.warning("Restored interrupted index update for %s", transaction["source_id"])
         elif state == "remote_committed":
-            expected_chunk_ids = _validate_staged_index_files(transaction)
+            expected_chunks = _validate_staged_index_files(transaction)
             store = WeaviateStore(config.weaviate)
             try:
-                remote_chunk_ids = {
-                    chunk.chunk_id
+                remote_chunks = {
+                    chunk.chunk_id: _recovery_chunk_content(chunk)
                     for chunk, _ in store.iter_source_chunks(transaction["source_id"])
                 }
-                if remote_chunk_ids != expected_chunk_ids:
+                if remote_chunks != expected_chunks:
                     _restore_source(
                         store,
                         transaction["source_id"],
@@ -515,7 +522,7 @@ def _recover_index_transactions(config: AppConfig, logger) -> None:  # noqa: ANN
                     )
                     logger.warning(
                         "Restored interrupted index update for %s because the remote "
-                        "generation was incomplete",
+                        "generation did not match the staged chunks",
                         transaction["source_id"],
                     )
                 else:

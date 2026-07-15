@@ -674,6 +674,75 @@ def test_restores_incremental_snapshot_when_remote_commit_is_incomplete(
     assert not journal.exists()
 
 
+def test_restores_incremental_snapshot_when_remote_content_is_from_older_generation(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    staged_chunks = tmp_path / "staged-chunks.jsonl"
+    staged_manifest = tmp_path / "staged-manifest.json"
+    live_chunks = tmp_path / "live-chunks.jsonl"
+    live_manifest = tmp_path / "live-manifest.json"
+    snapshot = tmp_path / "snapshot.jsonl"
+    expected = _chunk("source-1", 0)
+    expected.text = "new generation"
+    remote = expected.model_copy(update={"text": "old generation"})
+    staged_chunks.write_text(json.dumps(expected.model_dump(mode="json")) + "\n")
+    staged_manifest.write_text(_manifest(tmp_path).model_dump_json(indent=2))
+    live_chunks.write_text("old chunks\n")
+    live_manifest.write_text("old manifest\n")
+    old_chunk = _chunk("source-1", 9, "old")
+    snapshot.write_text(
+        json.dumps({"chunk": old_chunk.model_dump(mode="json"), "vector": [0.5, 0.5]})
+        + "\n"
+    )
+    journal = tmp_path / ".index-transaction.json"
+    journal.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "kind": "incremental",
+                "state": "remote_committed",
+                "source_id": "source-1",
+                "snapshot": str(snapshot),
+                "staged_chunks": str(staged_chunks),
+                "live_chunks": str(live_chunks),
+                "staged_manifest": str(staged_manifest),
+                "live_manifest": str(live_manifest),
+            }
+        )
+    )
+
+    class Store:
+        deleted = []
+        restored = []
+
+        def __init__(self, _config) -> None:  # noqa: ANN001
+            pass
+
+        def iter_source_chunks(self, _source_id):  # noqa: ANN001
+            yield remote, None
+
+        def delete_source(self, source_id: str) -> None:
+            self.deleted.append(source_id)
+
+        def upsert_chunks(self, chunks, vectors) -> None:  # noqa: ANN001
+            self.restored.extend((chunk.chunk_id, vector) for chunk, vector in zip(chunks, vectors))
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("scribebase.indexing.WeaviateStore", Store)
+
+    recover_index_transactions(config, Logger())
+
+    assert Store.deleted == ["source-1"]
+    assert Store.restored == [("old", [0.5, 0.5])]
+    assert live_chunks.read_text() == "old chunks\n"
+    assert live_manifest.read_text() == "old manifest\n"
+    assert not journal.exists()
+
+
 def test_finishes_promoted_full_rebuild_after_restart(tmp_path, monkeypatch) -> None:  # noqa: ANN001
     config = default_config()
     config.data_dir = tmp_path
