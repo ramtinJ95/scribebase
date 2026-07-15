@@ -375,6 +375,36 @@ def test_create_job_rejects_unsupported_upload_before_writing(tmp_path) -> None:
     assert not list((tmp_path / "uploads").glob("*"))
 
 
+def test_committed_job_survives_upload_reservation_cleanup_failure(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    monkeypatch.setattr(
+        "scribebase.server_jobs._release_reservation_unlocked",
+        lambda *_args: (_ for _ in ()).throw(OSError("directory sync failed")),
+    )
+
+    with pytest.warns(UserWarning, match="reservation cleanup could not be confirmed"):
+        job = create_ingest_job(
+            config,
+            "notes.txt",
+            BytesIO(b"durable note"),
+            "Notes",
+            "notes",
+            None,
+            None,
+            "en",
+            "auto",
+            False,
+            False,
+        )
+
+    assert read_job(tmp_path, job.job_id).status == "queued"
+    assert Path(job.upload_path).read_bytes() == b"durable note"
+    assert identity_reservation_owned(tmp_path, job.identity_key or "", job.job_id)
+
+
 def test_create_job_enforces_active_queue_capacity(tmp_path) -> None:
     config = default_config()
     config.data_dir = tmp_path

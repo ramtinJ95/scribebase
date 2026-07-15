@@ -260,7 +260,14 @@ def create_ingest_job(
                 if duplicate_job is not None:
                     raise DuplicateSourceError(duplicate_job.source_id or "unknown", identity_key)
             write_job(config.data_dir, job)
-            _release_reservation_unlocked(config.data_dir, job_id)
+            try:
+                _release_reservation_unlocked(config.data_dir, job_id)
+            except OSError as exc:
+                warnings.warn(
+                    f"Queued job {job_id}, but upload reservation cleanup could not be "
+                    f"confirmed: {exc}",
+                    stacklevel=2,
+                )
         return job
     except Exception:
         durable_unlink(upload_path, missing_ok=True)
