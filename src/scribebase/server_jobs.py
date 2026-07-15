@@ -739,7 +739,7 @@ def reconcile_queue_storage(config: AppConfig) -> None:
                     durable_unlink(upload, missing_ok=True)
         reserved_ids = {path.stem for path in _reservation_dir(config.data_dir).glob("*.json")}
         for upload in (config.data_dir / "uploads").glob("*"):
-            job_id = upload.name.split("_", 1)[0]
+            job_id = _upload_job_id(upload)
             if upload.resolve() in referenced or job_id in reserved_ids:
                 continue
             if now - upload.stat().st_mtime >= config.server.failed_upload_retention_seconds:
@@ -750,6 +750,13 @@ def reconcile_queue_storage(config: AppConfig) -> None:
         orphan_job_seconds=config.server.identity_orphan_job_seconds,
         direct_seconds=config.server.identity_direct_reservation_seconds,
     )
+
+
+def _upload_job_id(path: Path) -> str:
+    name = path.name
+    if name.startswith(".") and name.endswith(".tmp"):
+        name = name[1:]
+    return name.split("_", 1)[0]
 
 
 @contextmanager

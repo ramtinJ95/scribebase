@@ -1005,6 +1005,40 @@ def test_queue_reconciliation_removes_expired_failed_upload(tmp_path) -> None:
     assert not Path(job.upload_path).exists()
 
 
+def test_queue_reconciliation_preserves_active_atomic_upload(tmp_path) -> None:
+    config = default_config()
+    config.data_dir = tmp_path
+    config.server.failed_upload_retention_seconds = 0
+
+    class ReconcileDuringRead:
+        reconciled = False
+
+        def read(self, _size):  # noqa: ANN001, ANN201
+            if self.reconciled:
+                return b""
+            self.reconciled = True
+            temporary = next((tmp_path / "uploads").glob(".*.tmp"))
+            reconcile_queue_storage(config)
+            assert temporary.exists()
+            return b"durable note"
+
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        ReconcileDuringRead(),
+        "Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        False,
+        False,
+    )
+
+    assert Path(job.upload_path).read_bytes() == b"durable note"
+
+
 def test_losing_concurrent_retry_keeps_winner_identity_reservation(tmp_path) -> None:
     config = default_config()
     config.data_dir = tmp_path
