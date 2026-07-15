@@ -18,7 +18,7 @@ from scribebase.config import AppConfig
 from scribebase.durable_fs import atomic_write, atomic_write_text, durable_replace, durable_unlink
 from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
 from scribebase.extraction import extract_source, recover_source_publications
-from scribebase.indexing import index_source, recover_index_transactions
+from scribebase.indexing import index_recovery_pending, index_source, recover_index_transactions
 from scribebase.logging_utils import setup_logging
 from scribebase.markdown.frontmatter import read_markdown_with_frontmatter
 from scribebase.models import (
@@ -479,19 +479,21 @@ def run_worker(config: AppConfig, once: bool = False, poll_seconds: float | None
     worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:8]}"
     logger = setup_logging(config.data_dir)
     with _worker_lock(config.data_dir):
+        recovered_sources = recover_source_publications(config.data_dir)
+        if recovered_sources:
+            logger.warning("Recovered %s interrupted source publications", recovered_sources)
+        while index_recovery_pending(config.data_dir):
+            ready, message = _weaviate_ready(config)
+            if not ready:
+                logger.warning("Index recovery waiting for Weaviate: %s", message)
+                if once:
+                    return
+                time.sleep(config.server.worker_dependency_retry_seconds)
+                continue
+            # Journal/artifact errors are permanent until an operator intervenes.
+            # Let them fail startup instead of advertising a healthy idle worker.
+            recover_index_transactions(config, logger)
         with _worker_heartbeat(config, worker_id):
-            recovered_sources = recover_source_publications(config.data_dir)
-            if recovered_sources:
-                logger.warning("Recovered %s interrupted source publications", recovered_sources)
-            while True:
-                try:
-                    recover_index_transactions(config, logger)
-                    break
-                except Exception as exc:
-                    logger.warning("Index recovery deferred until dependencies are ready: %s", exc)
-                    if once:
-                        return
-                    time.sleep(config.server.worker_dependency_retry_seconds)
             reconcile_queue_storage(config)
             recover_interrupted_jobs(config.data_dir)
             last_reconcile = time.monotonic()
@@ -590,6 +592,16 @@ def _copy_limited(fileobj: BinaryIO, destination: Path, limit: int) -> None:
 
 
 def _index_dependencies_ready(config: AppConfig) -> tuple[bool, str]:
+    ready, message = _weaviate_ready(config)
+    if not ready:
+        return ready, message
+    embedding_ok, message = LlamaCppEmbeddingClient(config.embedding).check_health()
+    if not embedding_ok:
+        return False, f"Embedding service is unavailable: {message}"
+    return True, "index dependencies ready"
+
+
+def _weaviate_ready(config: AppConfig) -> tuple[bool, str]:
     store = WeaviateStore(config.weaviate)
     try:
         if not store.is_ready():
@@ -598,10 +610,7 @@ def _index_dependencies_ready(config: AppConfig) -> tuple[bool, str]:
         return False, f"Weaviate is unavailable: {exc}"
     finally:
         store.close()
-    embedding_ok, message = LlamaCppEmbeddingClient(config.embedding).check_health()
-    if not embedding_ok:
-        return False, f"Embedding service is unavailable: {message}"
-    return True, "index dependencies ready"
+    return True, "Weaviate ready"
 
 
 def _persist_claimed_job(data_dir: Path, job: IngestJob, claim_token: str) -> None:

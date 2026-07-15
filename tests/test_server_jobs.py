@@ -334,6 +334,40 @@ def test_worker_once_recovers_and_processes_one_job(tmp_path, monkeypatch) -> No
     assert read_job(tmp_path, job.job_id).status == "running"
 
 
+def test_worker_fails_startup_on_permanent_index_recovery_error(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    (tmp_path / ".index-transaction.json").write_text("{")
+    monkeypatch.setattr(
+        "scribebase.server_jobs._weaviate_ready", lambda _config: (True, "ready")
+    )
+
+    with pytest.raises(RuntimeError, match="Unreadable index recovery journal"):
+        run_worker(config, once=True)
+
+    assert not (tmp_path / "jobs" / ".worker-heartbeat").exists()
+
+
+def test_worker_waits_without_heartbeat_while_recovery_dependency_is_down(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    (tmp_path / ".index-transaction.json").write_text("pending")
+    monkeypatch.setattr(
+        "scribebase.server_jobs._weaviate_ready",
+        lambda _config: (False, "Weaviate is starting"),
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs.recover_index_transactions",
+        lambda *_args: pytest.fail("recovery must wait for Weaviate"),
+    )
+
+    run_worker(config, once=True)
+
+    assert not (tmp_path / "jobs" / ".worker-heartbeat").exists()
+
+
 def test_worker_lock_rejects_second_worker(tmp_path) -> None:
     with _worker_lock(tmp_path):
         with pytest.raises(RuntimeError, match="already running"):

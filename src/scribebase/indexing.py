@@ -417,6 +417,10 @@ def recover_index_transactions(config: AppConfig, logger) -> None:  # noqa: ANN0
         _recover_index_transactions(config, logger)
 
 
+def index_recovery_pending(data_dir: Path) -> bool:
+    return _incremental_journal_path(data_dir).exists() or _rebuild_journal_path(data_dir).exists()
+
+
 def _recover_index_transactions(config: AppConfig, logger) -> None:  # noqa: ANN001
     incremental = _incremental_journal_path(config.data_dir)
     if incremental.exists():
