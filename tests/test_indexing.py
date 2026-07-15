@@ -6,6 +6,7 @@ import pytest
 
 from scribebase.config import default_config
 from scribebase.indexing import (
+    _finish_incremental_transaction,
     _index_lock,
     _install_staged_files,
     index_source,
@@ -900,3 +901,39 @@ def test_index_lock_rejects_concurrent_mutation(tmp_path) -> None:  # noqa: ANN0
         with pytest.raises(RuntimeError, match="Another index operation"):
             with _index_lock(tmp_path):
                 pass
+
+
+def test_committed_index_artifact_cleanup_failure_is_nonfatal(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    journal = tmp_path / ".index-transaction.json"
+    snapshot = tmp_path / "snapshot.jsonl"
+    staged_chunks = tmp_path / "staged-chunks.jsonl"
+    staged_manifest = tmp_path / "staged-manifest.json"
+    for path in (journal, snapshot, staged_chunks, staged_manifest):
+        path.write_text("artifact")
+    transaction = {
+        "snapshot": str(snapshot),
+        "staged_chunks": str(staged_chunks),
+        "staged_manifest": str(staged_manifest),
+    }
+    warnings = []
+
+    class WarningLogger:
+        def warning(self, *args) -> None:  # noqa: ANN002
+            warnings.append(args)
+
+    from scribebase.durable_fs import durable_unlink as real_unlink
+
+    def fail_artifact_cleanup(path, *, missing_ok=False):  # noqa: ANN001, ANN202
+        if path == journal:
+            return real_unlink(path, missing_ok=missing_ok)
+        raise OSError("cleanup unavailable")
+
+    monkeypatch.setattr("scribebase.indexing.durable_unlink", fail_artifact_cleanup)
+
+    _finish_incremental_transaction(journal, transaction, WarningLogger())
+
+    assert not journal.exists()
+    assert snapshot.exists()
+    assert staged_chunks.exists()
+    assert staged_manifest.exists()
+    assert len(warnings) == 3

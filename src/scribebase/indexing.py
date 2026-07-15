@@ -157,7 +157,7 @@ def _index_source(
             _install_staged_files(
                 [(staged_chunks, chunks_path), (staged_manifest, manifest_path)]
             )
-            _finish_incremental_transaction(journal_path, transaction)
+            _finish_incremental_transaction(journal_path, transaction, logger)
     except Exception as exc:
         dependency_error = as_dependency_unavailable(exc)
         if (
@@ -168,7 +168,7 @@ def _index_source(
         ):
             try:
                 _restore_source(store, source_id, snapshot_path, config.embedding.batch_size)
-                _finish_incremental_transaction(journal_path, transaction)
+                _finish_incremental_transaction(journal_path, transaction, logger)
             except Exception as rollback_exc:
                 preserve_snapshot = True
                 message = (
@@ -180,7 +180,7 @@ def _index_source(
                 raise RuntimeError(message) from exc
         elif collection_name is None and transaction is not None:
             if transaction["state"] == "prepared":
-                _finish_incremental_transaction(journal_path, transaction)
+                _finish_incremental_transaction(journal_path, transaction, logger)
             else:
                 preserve_snapshot = True
         if dependency_error is not None and dependency_error is not exc:
@@ -302,7 +302,7 @@ def _rebuild_index(
                     store.delete_collection(previous)
                 except Exception as exc:
                     logger.warning("Could not remove previous collection %s: %s", previous, exc)
-            _finish_rebuild_transaction(journal_path, transaction)
+            _finish_rebuild_transaction(journal_path, transaction, logger)
         except Exception as exc:
             preserve_staging = isinstance(exc, CollectionAliasMigrationError)
             if transaction is None and not preserve_staging:
@@ -491,7 +491,7 @@ def _recover_index_transactions(config: AppConfig, logger) -> None:  # noqa: ANN
         transaction = _read_journal(incremental, "incremental")
         state = transaction["state"]
         if state == "prepared":
-            _finish_incremental_transaction(incremental, transaction)
+            _finish_incremental_transaction(incremental, transaction, logger)
         elif state == "mutating":
             store = WeaviateStore(config.weaviate)
             try:
@@ -503,7 +503,7 @@ def _recover_index_transactions(config: AppConfig, logger) -> None:  # noqa: ANN
                 )
             finally:
                 store.close()
-            _finish_incremental_transaction(incremental, transaction)
+            _finish_incremental_transaction(incremental, transaction, logger)
             logger.warning("Restored interrupted index update for %s", transaction["source_id"])
         elif state == "remote_committed":
             expected_chunks = _validate_staged_index_files(transaction)
@@ -543,7 +543,7 @@ def _recover_index_transactions(config: AppConfig, logger) -> None:  # noqa: ANN
                     )
             finally:
                 store.close()
-            _finish_incremental_transaction(incremental, transaction)
+            _finish_incremental_transaction(incremental, transaction, logger)
         else:
             raise RuntimeError(f"Unknown incremental index transaction state: {state!r}")
 
@@ -582,7 +582,7 @@ def _recover_index_transactions(config: AppConfig, logger) -> None:  # noqa: ANN
                     store.delete_collection(previous)
                 except Exception as exc:
                     logger.warning("Could not remove previous collection %s: %s", previous, exc)
-            _finish_rebuild_transaction(rebuild, transaction)
+            _finish_rebuild_transaction(rebuild, transaction, logger)
             logger.warning("Finished interrupted full index rebuild")
         finally:
             store.close()
@@ -610,16 +610,27 @@ def _read_journal(path: Path, kind: str) -> dict:
     return transaction
 
 
-def _finish_incremental_transaction(path: Path, transaction: dict) -> None:
+def _finish_incremental_transaction(path: Path, transaction: dict, logger) -> None:  # noqa: ANN001
     durable_unlink(path, missing_ok=True)
-    for key in ("snapshot", "staged_chunks", "staged_manifest"):
-        durable_unlink(Path(transaction[key]), missing_ok=True)
+    _remove_committed_artifacts(
+        [Path(transaction[key]) for key in ("snapshot", "staged_chunks", "staged_manifest")],
+        logger,
+    )
 
 
-def _finish_rebuild_transaction(path: Path, transaction: dict) -> None:
+def _finish_rebuild_transaction(path: Path, transaction: dict, logger) -> None:  # noqa: ANN001
     durable_unlink(path, missing_ok=True)
-    for entry in transaction["files"]:
-        durable_unlink(Path(entry["staged"]), missing_ok=True)
+    _remove_committed_artifacts(
+        [Path(entry["staged"]) for entry in transaction["files"]], logger
+    )
+
+
+def _remove_committed_artifacts(paths: list[Path], logger) -> None:  # noqa: ANN001
+    for path in paths:
+        try:
+            durable_unlink(path, missing_ok=True)
+        except OSError as exc:
+            logger.warning("Committed index transaction retained cleanup artifact %s: %s", path, exc)
 
 
 @contextmanager
