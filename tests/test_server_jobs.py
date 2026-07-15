@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
@@ -16,6 +17,7 @@ from scribebase.server_jobs import (
     QueueFullError,
     UnsupportedUploadError,
     UploadTooLargeError,
+    _worker_heartbeat,
     _worker_lock,
     claim_next_job,
     create_ingest_job,
@@ -406,6 +408,22 @@ def test_worker_lock_rejects_second_worker(tmp_path) -> None:
         with pytest.raises(RuntimeError, match="already running"):
             with _worker_lock(tmp_path):
                 pass
+
+
+def test_worker_heartbeat_does_not_use_durable_state_writes(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    config.server.worker_heartbeat_seconds = 60
+    monkeypatch.setattr(
+        "scribebase.server_jobs.atomic_write_text",
+        lambda *_args: pytest.fail("heartbeat must not force a durable storage flush"),
+    )
+
+    with _worker_heartbeat(config, "test-worker"):
+        heartbeat = tmp_path / "jobs" / ".worker-heartbeat"
+        assert json.loads(heartbeat.read_text())["worker_id"] == "test-worker"
+
+    assert not heartbeat.exists()
 
 
 def test_recovered_job_with_source_id_resumes_at_indexing(tmp_path, monkeypatch) -> None:  # noqa: ANN001

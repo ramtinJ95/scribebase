@@ -720,13 +720,13 @@ def _worker_heartbeat(config: AppConfig, worker_id: str):  # noqa: ANN202
 
     def update() -> None:
         while not stop.is_set():
-            _write_text_atomic(
+            _write_heartbeat(
                 path,
                 json.dumps({"worker_id": worker_id, "updated_at": _now().isoformat()}),
             )
             stop.wait(config.server.worker_heartbeat_seconds)
 
-    _write_text_atomic(
+    _write_heartbeat(
         path,
         json.dumps({"worker_id": worker_id, "updated_at": _now().isoformat()}),
     )
@@ -742,6 +742,17 @@ def _worker_heartbeat(config: AppConfig, worker_id: str):  # noqa: ANN202
 
 def _heartbeat_path(data_dir: Path) -> Path:
     return data_dir / "jobs" / ".worker-heartbeat"
+
+
+def _write_heartbeat(path: Path, content: str) -> None:
+    """Atomically publish ephemeral liveness state without forcing storage flushes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_text(content)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _write_text_atomic(path: Path, content: str) -> None:

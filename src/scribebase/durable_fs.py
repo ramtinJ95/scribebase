@@ -24,10 +24,11 @@ def sync_file(path: Path) -> None:
 
 
 def sync_file_descriptor(descriptor: int) -> None:
-    os.fsync(descriptor)
     full_sync = getattr(fcntl, "F_FULLFSYNC", None)
     if full_sync is not None:
         fcntl.fcntl(descriptor, full_sync)
+    else:
+        os.fsync(descriptor)
 
 
 def sync_tree(root: Path) -> None:
