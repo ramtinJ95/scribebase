@@ -73,8 +73,9 @@ def dependency_unavailable_from_messages(
     """Recover typed retryability after the Weaviate batch API stringifies errors."""
     detail = "; ".join(message for message in messages if message)
     transient_type_names = tuple(error_type.__name__ for error_type in _TRANSIENT_DEPENDENCY_ERRORS)
+    normalized_detail = detail.casefold()
     if any(
-        marker in detail
+        marker.casefold() in normalized_detail
         for marker in transient_type_names + _TRANSIENT_BATCH_MESSAGE_MARKERS
     ):
         return DependencyUnavailableError(detail or "Weaviate batch dependency unavailable")

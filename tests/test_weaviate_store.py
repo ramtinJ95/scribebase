@@ -353,6 +353,13 @@ def test_failed_batch_objects_keep_permanent_errors_explicit() -> None:
         weaviate_store._raise_batch_failures(failed, "Failed to insert 1 chunk")
 
 
+def test_failed_batch_dependency_matching_is_case_insensitive() -> None:
+    failed = [type("FailedObject", (), {"message": "Connection reset by peer"})()]
+
+    with pytest.raises(DependencyUnavailableError, match="Connection reset by peer"):
+        weaviate_store._raise_batch_failures(failed, "Failed to insert 1 chunk")
+
+
 def test_source_iteration_uses_cursor_pagination(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr("weaviate.classes.query.Filter", FakeFilter)
     chunks = [
