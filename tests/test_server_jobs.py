@@ -92,6 +92,9 @@ def test_run_ingest_job_marks_success_and_indexes(tmp_path, monkeypatch) -> None
 
     monkeypatch.setattr("scribebase.server_jobs.extract_source", fake_extract)
     monkeypatch.setattr("scribebase.server_jobs.index_source", fake_index)
+    monkeypatch.setattr(
+        "scribebase.server_jobs._index_dependencies_ready", lambda _config: (True, "ready")
+    )
 
     claimed = _claim(config, job)
     run_ingest_job(job.job_id, claimed.claim_token or "", config)
@@ -377,12 +380,68 @@ def test_recovered_job_with_source_id_resumes_at_indexing(tmp_path, monkeypatch)
         "scribebase.server_jobs.index_source",
         lambda source_id, *_args, **_kwargs: indexed.append(source_id),
     )
+    monkeypatch.setattr(
+        "scribebase.server_jobs._index_dependencies_ready", lambda _config: (True, "ready")
+    )
 
     claimed = _claim(config, job)
     run_ingest_job(job.job_id, claimed.claim_token or "", config)
 
     assert indexed == [job.source_id]
     assert read_job(tmp_path, job.job_id).status == "succeeded"
+
+
+def test_indexing_job_waits_for_dependencies_without_losing_upload(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        BytesIO(b"note"),
+        "Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        False,
+        False,
+    )
+    now = datetime.now(timezone.utc)
+    source_root = tmp_path / "sources" / (job.source_id or "")
+    write_manifest(
+        SourceManifest(
+            source_id=job.source_id or "",
+            title="Notes",
+            source_type="notes",
+            original_path=str(source_root / "original" / "notes.txt"),
+            data_dir=str(source_root),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    job.phase = "extracted"
+    write_job(tmp_path, job)
+    monkeypatch.setattr(
+        "scribebase.server_jobs._index_dependencies_ready",
+        lambda _config: (False, "Weaviate is starting"),
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs.index_source",
+        lambda *_args, **_kwargs: pytest.fail("indexing must wait for dependencies"),
+    )
+
+    claimed = _claim(config, job)
+    run_ingest_job(job.job_id, claimed.claim_token or "", config)
+
+    saved = read_job(tmp_path, job.job_id)
+    assert saved.status == "queued"
+    assert saved.phase == "indexing"
+    assert saved.next_attempt_at is not None
+    assert saved.finished_at is None
+    assert "Weaviate is starting" in (saved.error or "")
+    assert Path(saved.upload_path).read_bytes() == b"note"
+    assert claim_next_job(tmp_path, "too-early") is None
 
 
 def test_recovery_reuses_preassigned_source_after_extraction_crash(tmp_path) -> None:
@@ -426,7 +485,7 @@ def test_recovery_reuses_preassigned_source_after_extraction_crash(tmp_path) -> 
     assert read_job(tmp_path, job.job_id).phase == "completed"
 
 
-def test_recovery_detects_completed_index_operation(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+def test_recovery_replays_completed_index_operation_to_verify_weaviate(tmp_path, monkeypatch) -> None:  # noqa: ANN001
     config = default_config()
     config.data_dir = tmp_path
     job = create_ingest_job(
@@ -458,9 +517,13 @@ def test_recovery_detects_completed_index_operation(tmp_path, monkeypatch) -> No
     job.status = "running"
     job.phase = "indexing"
     write_job(tmp_path, job)
+    replayed = []
     monkeypatch.setattr(
         "scribebase.server_jobs.index_source",
-        lambda *_args, **_kwargs: pytest.fail("completed indexing must not repeat"),
+        lambda source_id, *_args, **_kwargs: replayed.append(source_id),
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs._index_dependencies_ready", lambda _config: (True, "ready")
     )
 
     recover_interrupted_jobs(tmp_path)
@@ -470,6 +533,7 @@ def test_recovery_detects_completed_index_operation(tmp_path, monkeypatch) -> No
     saved = read_job(tmp_path, job.job_id)
     assert saved.status == "succeeded"
     assert saved.phase == "completed"
+    assert replayed == [job.source_id]
 
 
 def test_corrupt_job_is_quarantined_without_blocking_queue(tmp_path) -> None:

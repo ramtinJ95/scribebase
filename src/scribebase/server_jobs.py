@@ -9,14 +9,16 @@ import threading
 import time
 import warnings
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import BinaryIO, Literal, TypeVar
 from uuid import uuid4
 
 from scribebase.config import AppConfig
-from scribebase.extraction import extract_source
-from scribebase.indexing import index_source
+from scribebase.durable_fs import atomic_write, atomic_write_text, durable_replace, durable_unlink
+from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
+from scribebase.extraction import extract_source, recover_source_publications
+from scribebase.indexing import index_source, recover_index_transactions
 from scribebase.logging_utils import setup_logging
 from scribebase.markdown.frontmatter import read_markdown_with_frontmatter
 from scribebase.models import (
@@ -36,6 +38,7 @@ from scribebase.source_registry import (
     reserve_source_identity,
     slugify,
 )
+from scribebase.vectorstores.weaviate_store import WeaviateStore
 
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
 JobPhase = Literal["queued", "extracting", "extracted", "indexing", "completed"]
@@ -66,6 +69,10 @@ class UnsupportedUploadError(ValueError):
     pass
 
 
+class TransientDependencyError(RuntimeError):
+    pass
+
+
 class IngestJob(GenericMetadata):
     job_id: str
     status: JobStatus
@@ -92,6 +99,7 @@ class IngestJob(GenericMetadata):
     duplicate_policy: Literal["reject", "create"] = "reject"
     identity_key: str | None = None
     content_sha256: str | None = None
+    next_attempt_at: datetime | None = None
 
 
 class IngestJobResponse(GenericMetadata):
@@ -117,6 +125,7 @@ class IngestJobResponse(GenericMetadata):
     duplicate_policy: Literal["reject", "create"] = "reject"
     identity_key: str | None = None
     content_sha256: str | None = None
+    next_attempt_at: datetime | None = None
 
 
 def public_job(job: IngestJob) -> IngestJobResponse:
@@ -166,7 +175,7 @@ def create_ingest_job(
     try:
         _copy_limited(fileobj, upload_path, config.server.max_upload_bytes)
     except Exception:
-        upload_path.unlink(missing_ok=True)
+        durable_unlink(upload_path, missing_ok=True)
         _release_reservation(config.data_dir, job_id)
         raise
 
@@ -257,7 +266,7 @@ def create_ingest_job(
             _release_reservation_unlocked(config.data_dir, job_id)
         return job
     except Exception:
-        upload_path.unlink(missing_ok=True)
+        durable_unlink(upload_path, missing_ok=True)
         _release_reservation(config.data_dir, job_id)
         if "identity_key" in locals():
             release_source_identity(config.data_dir, identity_key, job_id)
@@ -318,23 +327,37 @@ def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
         if job.no_index:
             job.phase = "completed"
         elif job.phase in {"extracted", "indexing"}:
-            already_indexed = (
-                job.phase == "indexing"
-                and manifest.embedding_summary.index_operation_id == job.job_id
-            )
-            if not already_indexed:
-                job.phase = "indexing"
-                job.updated_at = _now()
-                _persist_claimed_job(config.data_dir, job, claim_token)
-                index_source(manifest.source_id, config, logger, operation_id=job.job_id)
+            job.phase = "indexing"
+            job.updated_at = _now()
+            _persist_claimed_job(config.data_dir, job, claim_token)
+            ready, message = _index_dependencies_ready(config)
+            if not ready:
+                raise TransientDependencyError(message)
+            # Replaying an interrupted operation is deliberate. A matching local
+            # operation ID cannot prove that Weaviate survived the same outage.
+            index_source(manifest.source_id, config, logger, operation_id=job.job_id)
             job.phase = "completed"
         job.status = "succeeded"
     except Exception as exc:
-        job.status = "failed"
-        job.error = str(exc).strip() or exc.__class__.__name__
+        retryable = isinstance(exc, TransientDependencyError)
+        if job.phase == "indexing" and not retryable:
+            ready, dependency_error = _index_dependencies_ready(config)
+            if not ready:
+                retryable = True
+                exc = TransientDependencyError(dependency_error)
+        if retryable:
+            job.status = "queued"
+            job.error = f"Dependency unavailable; retry scheduled: {exc}"
+            job.next_attempt_at = _now() + timedelta(
+                seconds=config.server.worker_dependency_retry_seconds
+            )
+        else:
+            job.status = "failed"
+            job.error = str(exc).strip() or exc.__class__.__name__
     finally:
-        job.finished_at = _now()
-        job.updated_at = job.finished_at
+        now = _now()
+        job.finished_at = now if job.status in {"succeeded", "failed"} else None
+        job.updated_at = now
         job.claim_token = None
         job.worker_id = None
         persisted = False
@@ -344,7 +367,7 @@ def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
                 write_job(config.data_dir, job)
                 persisted = True
         if persisted and job.status == "succeeded":
-            Path(job.upload_path).unlink(missing_ok=True)
+            durable_unlink(Path(job.upload_path), missing_ok=True)
         elif persisted and job.status == "failed" and job.identity_key:
             release_source_identity(config.data_dir, job.identity_key, job.job_id)
 
@@ -359,7 +382,7 @@ def list_jobs(data_dir: Path) -> list[IngestJob]:
             jobs.append(IngestJob.model_validate_json(path.read_text()))
         except Exception as exc:
             quarantine = path.with_suffix(f".corrupt.{int(time.time())}")
-            path.replace(quarantine)
+            durable_replace(path, quarantine)
             warnings.warn(f"Quarantined corrupt job {path}: {exc}", stacklevel=2)
     return sorted(jobs, key=lambda job: (job.created_at, job.job_id))
 
@@ -376,6 +399,7 @@ def recover_interrupted_jobs(data_dir: Path) -> int:
             job.finished_at = None
             job.claim_token = None
             job.worker_id = None
+            job.next_attempt_at = None
             write_job(data_dir, job)
             recovered += 1
     return recovered
@@ -384,7 +408,13 @@ def recover_interrupted_jobs(data_dir: Path) -> int:
 def claim_next_job(data_dir: Path, worker_id: str) -> IngestJob | None:
     with _queue_lock(data_dir):
         job = next(
-            (candidate for candidate in list_jobs(data_dir) if candidate.status == "queued"), None
+            (
+                candidate
+                for candidate in list_jobs(data_dir)
+                if candidate.status == "queued"
+                and (candidate.next_attempt_at is None or candidate.next_attempt_at <= _now())
+            ),
+            None,
         )
         if job is None:
             return None
@@ -392,6 +422,7 @@ def claim_next_job(data_dir: Path, worker_id: str) -> IngestJob | None:
         job.started_at = _now()
         job.updated_at = job.started_at
         job.error = None
+        job.next_attempt_at = None
         job.attempts += 1
         job.claim_token = uuid4().hex
         job.worker_id = worker_id
@@ -433,6 +464,7 @@ def retry_job(config: AppConfig, job_id: str) -> IngestJob:
             job.claim_token = None
             job.worker_id = None
             job.updated_at = _now()
+            job.next_attempt_at = None
             write_job(config.data_dir, job)
             return job
     except Exception:
@@ -445,8 +477,21 @@ def run_worker(config: AppConfig, once: bool = False, poll_seconds: float | None
     ensure_data_layout(config.data_dir)
     delay = poll_seconds if poll_seconds is not None else config.server.worker_poll_seconds
     worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:8]}"
+    logger = setup_logging(config.data_dir)
     with _worker_lock(config.data_dir):
         with _worker_heartbeat(config, worker_id):
+            recovered_sources = recover_source_publications(config.data_dir)
+            if recovered_sources:
+                logger.warning("Recovered %s interrupted source publications", recovered_sources)
+            while True:
+                try:
+                    recover_index_transactions(config, logger)
+                    break
+                except Exception as exc:
+                    logger.warning("Index recovery deferred until dependencies are ready: %s", exc)
+                    if once:
+                        return
+                    time.sleep(config.server.worker_dependency_retry_seconds)
             reconcile_queue_storage(config)
             recover_interrupted_jobs(config.data_dir)
             last_reconcile = time.monotonic()
@@ -533,13 +578,30 @@ def worker_is_running(data_dir: Path) -> bool:
 
 
 def _copy_limited(fileobj: BinaryIO, destination: Path, limit: int) -> None:
-    written = 0
-    with destination.open("wb") as output:
+    def copy(output: BinaryIO) -> None:
+        written = 0
         while data := fileobj.read(min(1024 * 1024, limit - written + 1)):
             written += len(data)
             if written > limit:
                 raise UploadTooLargeError(f"Upload exceeds {limit} bytes")
             output.write(data)
+
+    atomic_write(destination, copy)
+
+
+def _index_dependencies_ready(config: AppConfig) -> tuple[bool, str]:
+    store = WeaviateStore(config.weaviate)
+    try:
+        if not store.is_ready():
+            return False, f"Weaviate is not ready at {config.weaviate.url}"
+    except Exception as exc:
+        return False, f"Weaviate is unavailable: {exc}"
+    finally:
+        store.close()
+    embedding_ok, message = LlamaCppEmbeddingClient(config.embedding).check_health()
+    if not embedding_ok:
+        return False, f"Embedding service is unavailable: {message}"
+    return True, "index dependencies ready"
 
 
 def _persist_claimed_job(data_dir: Path, job: IngestJob, claim_token: str) -> None:
@@ -603,7 +665,7 @@ def _release_reservation(data_dir: Path, job_id: str) -> None:
 
 
 def _release_reservation_unlocked(data_dir: Path, job_id: str) -> None:
-    (_reservation_dir(data_dir) / f"{job_id}.json").unlink(missing_ok=True)
+    durable_unlink(_reservation_dir(data_dir) / f"{job_id}.json", missing_ok=True)
 
 
 def _validate_upload_storage(config: AppConfig) -> None:
@@ -624,25 +686,25 @@ def reconcile_queue_storage(config: AppConfig) -> None:
         reservations = list(_reservation_dir(config.data_dir).glob("*.json"))
         for path in reservations:
             if now - path.stat().st_mtime > config.server.upload_reservation_timeout_seconds:
-                path.unlink(missing_ok=True)
+                durable_unlink(path, missing_ok=True)
         jobs = list_jobs(config.data_dir)
         active_job_ids = {job.job_id for job in jobs if job.status in {"queued", "running"}}
         referenced = {Path(job.upload_path).resolve() for job in jobs}
         for job in jobs:
             upload = Path(job.upload_path)
             if job.status == "succeeded":
-                upload.unlink(missing_ok=True)
+                durable_unlink(upload, missing_ok=True)
             elif job.status == "failed" and job.finished_at is not None:
                 age = (_now() - job.finished_at).total_seconds()
                 if age >= config.server.failed_upload_retention_seconds:
-                    upload.unlink(missing_ok=True)
+                    durable_unlink(upload, missing_ok=True)
         reserved_ids = {path.stem for path in _reservation_dir(config.data_dir).glob("*.json")}
         for upload in (config.data_dir / "uploads").glob("*"):
             job_id = upload.name.split("_", 1)[0]
             if upload.resolve() in referenced or job_id in reserved_ids:
                 continue
             if now - upload.stat().st_mtime >= config.server.failed_upload_retention_seconds:
-                upload.unlink(missing_ok=True)
+                durable_unlink(upload, missing_ok=True)
     reconcile_source_identity_reservations(
         config.data_dir,
         active_job_ids,
@@ -675,7 +737,7 @@ def _worker_heartbeat(config: AppConfig, worker_id: str):  # noqa: ANN202
     finally:
         stop.set()
         thread.join(timeout=config.server.worker_heartbeat_seconds + 1)
-        path.unlink(missing_ok=True)
+        durable_unlink(path, missing_ok=True)
 
 
 def _heartbeat_path(data_dir: Path) -> Path:
@@ -683,21 +745,7 @@ def _heartbeat_path(data_dir: Path) -> Path:
 
 
 def _write_text_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.{uuid4().hex}.tmp")
-    try:
-        with temporary.open("w") as output:
-            output.write(content)
-            output.flush()
-            os.fsync(output.fileno())
-        temporary.replace(path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        temporary.unlink(missing_ok=True)
+    atomic_write_text(path, content)
 
 
 @contextmanager

@@ -1,6 +1,7 @@
 services:
   weaviate:
     image: cr.weaviate.io/semitechnologies/weaviate:1.36.20
+    restart: unless-stopped
     ports:
       - "8081:8080"
       - "50051:50051"
