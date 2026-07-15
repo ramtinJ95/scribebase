@@ -357,10 +357,23 @@ def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
             if current.claim_token == claim_token:
                 write_job(config.data_dir, job)
                 persisted = True
-        if persisted and job.status == "succeeded":
+        if persisted:
+            _cleanup_terminal_job(job, config, logger)
+
+
+def _cleanup_terminal_job(job: IngestJob, config: AppConfig, logger) -> None:  # noqa: ANN001
+    try:
+        if job.status == "succeeded":
             durable_unlink(Path(job.upload_path), missing_ok=True)
-        elif persisted and job.status == "failed" and job.identity_key:
+        elif job.status == "failed" and job.identity_key:
             release_source_identity(config.data_dir, job.identity_key, job.job_id)
+    except Exception as exc:
+        logger.warning(
+            "Job %s is durably %s but terminal cleanup failed: %s",
+            job.job_id,
+            job.status,
+            exc,
+        )
 
 
 def list_jobs(data_dir: Path) -> list[IngestJob]:

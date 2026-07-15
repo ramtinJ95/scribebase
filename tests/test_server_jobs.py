@@ -172,6 +172,95 @@ def test_run_ingest_job_marks_failure(tmp_path, monkeypatch) -> None:
     assert saved.error == "boom"
 
 
+def test_successful_job_cleanup_failure_does_not_escape(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        BytesIO(b"note"),
+        "Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        True,
+        False,
+    )
+    warnings = []
+
+    class Logger:
+        def warning(self, *args) -> None:  # noqa: ANN002
+            warnings.append(args)
+
+    def fake_extract(*_args, **metadata):  # noqa: ANN002, ANN202
+        now = datetime.now(timezone.utc)
+        return SourceManifest(
+            source_id=metadata["source_id"],
+            title="Notes",
+            source_type="notes",
+            original_path=job.upload_path,
+            data_dir=str(tmp_path / "sources" / metadata["source_id"]),
+            created_at=now,
+            updated_at=now,
+        )
+
+    monkeypatch.setattr("scribebase.server_jobs.setup_logging", lambda _data_dir: Logger())
+    monkeypatch.setattr("scribebase.server_jobs.extract_source", fake_extract)
+    monkeypatch.setattr(
+        "scribebase.server_jobs.durable_unlink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("cleanup failed")),
+    )
+
+    claimed = _claim(config, job)
+    run_ingest_job(job.job_id, claimed.claim_token or "", config)
+
+    assert read_job(tmp_path, job.job_id).status == "succeeded"
+    assert len(warnings) == 1
+
+
+def test_failed_job_identity_cleanup_failure_does_not_escape(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        BytesIO(b"note"),
+        "Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        True,
+        False,
+    )
+    warnings = []
+
+    class Logger:
+        def warning(self, *args) -> None:  # noqa: ANN002
+            warnings.append(args)
+
+    monkeypatch.setattr("scribebase.server_jobs.setup_logging", lambda _data_dir: Logger())
+    monkeypatch.setattr(
+        "scribebase.server_jobs.extract_source",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad input")),
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs.release_source_identity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("cleanup failed")),
+    )
+
+    claimed = _claim(config, job)
+    run_ingest_job(job.job_id, claimed.claim_token or "", config)
+
+    saved = read_job(tmp_path, job.job_id)
+    assert saved.status == "failed"
+    assert saved.error == "bad input"
+    assert len(warnings) == 1
+
+
 def test_run_ingest_job_passes_generic_metadata(tmp_path, monkeypatch) -> None:
     config = default_config()
     config.data_dir = tmp_path
