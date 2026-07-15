@@ -88,7 +88,9 @@ curl -s http://127.0.0.1:8081/v1/.well-known/ready
 ```
 
 Docker Desktop can be set to start on login. Keep the compose project in the
-repo so the named `weaviate_data` volume is reused across restarts.
+repo so the named `weaviate_data` volume is reused across restarts. The Compose
+service uses `restart: unless-stopped`, so it returns after Docker starts unless
+an operator explicitly stopped it.
 
 ## 4. Start embeddings
 
@@ -212,6 +214,10 @@ Run `scribebase init` first so the configured data and log directories exist.
 The source/data directory must be a local filesystem; the worker's advisory
 lock does not support multiple hosts sharing one queue over NFS or SMB.
 
+The worker settles interrupted source publications and index transaction
+journals before accepting more queue work. If Weaviate is still starting after
+a reboot, indexing jobs remain queued and retry instead of being marked failed.
+
 Then load them:
 
 ```bash
@@ -312,6 +318,29 @@ curl -s http://127.0.0.1:8080/v1/models
 uv run scribebase doctor
 curl -s http://127.0.0.1:8765/health
 ```
+
+### Power-loss and backup boundary
+
+ScribeBase durably publishes uploads, job records, source directories,
+manifests, and chunk files using file syncs, macOS full-storage syncs, and
+atomic renames. Index updates and full rebuild promotions leave transaction
+journals that the worker settles after restart. `$DATA/sources` is canonical;
+the Weaviate index can be recreated with `scribebase rebuild-index --all`.
+
+These guarantees cover an unexpected restart or power loss on a healthy local
+filesystem. They do not cover SSD failure, filesystem corruption, theft, or
+accidental deletion. Include `$DATA` in Time Machine or another independently
+stored backup. A Docker named volume is persistent storage, not a backup.
+
+To restore canonical data, stop the ScribeBase worker and server, restore the
+entire `$DATA` directory as one generation, start Weaviate and embeddings, then
+run:
+
+```bash
+uv run scribebase rebuild-index --all
+```
+
+Do not restore individual manifests without their matching source directories.
 
 Useful recovery commands:
 

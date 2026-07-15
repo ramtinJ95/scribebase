@@ -126,10 +126,12 @@ The configured Weaviate collection name is a stable alias. Full rebuilds:
 3. verify expected object counts;
 4. promote the alias;
 5. transactionally install matching local chunk/manifest metadata;
-6. retain recovery artifacts when rollback cannot complete.
+6. retain a durable journal until remote and local generations agree.
 
 Single-source updates snapshot existing vectors and restore them on failed
-replacement. Index mutations are serialized per data directory.
+replacement. A durable operation journal restores an interrupted mutation or
+finishes local publication after the remote commit. Index mutations are
+serialized per data directory.
 
 ## Retrieval
 
@@ -162,8 +164,13 @@ filesystem locks and ownership tokens.
 
 Jobs have durable extraction/indexing phases. Worker health requires both the
 worker lock and a fresh heartbeat. Interrupted jobs resume from their durable
-phase. Upload size, queue capacity, total upload storage, reservations, and
-failed-upload retention are bounded by configuration.
+phase. Index work waits and retries while Weaviate or embeddings are unavailable
+after reboot. Upload size, queue capacity, total upload storage, reservations,
+and failed-upload retention are bounded by configuration.
+
+Uploads and canonical source trees are synced to stable local storage before
+their durable job or live source entry is published. On macOS this includes a
+full-storage sync before the atomic rename.
 
 NFS/SMB queues and multiple hosts sharing one data directory are unsupported.
 
@@ -187,6 +194,7 @@ may bind to LAN/Tailscale interfaces with bearer authentication.
 - Duplicate automation retries do not create duplicate sources.
 - Every searchable chunk can be traced to source/page metadata.
 - Existing search remains available during failed staged rebuilds.
-- Worker/process crashes preserve enough state for explicit recovery.
+- Worker/process crashes and sudden machine loss preserve enough state for
+  automatic worker recovery on a healthy local filesystem.
 - Index/schema/model changes fail visibly rather than silently mixing states.
 - The complete Weaviate index can be rebuilt from local source data.
