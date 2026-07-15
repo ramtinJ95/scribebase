@@ -235,6 +235,34 @@ def test_same_id_recovery_replaces_stale_generated_files(tmp_path) -> None:
     assert (root / "markdown" / "document.md").exists()
 
 
+def test_backup_cleanup_failure_does_not_fail_published_source(
+    tmp_path, monkeypatch, caplog
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path / "data"
+    source = tmp_path / "source.txt"
+    source.write_text("content")
+    manifest = _extract(source, "Source", config, source_id="stable-source")
+    root = Path(manifest.data_dir)
+    (root / "markdown" / "document.md").unlink()
+    from scribebase.durable_fs import durable_rmtree as real_rmtree
+
+    def fail_backup_cleanup(path):  # noqa: ANN001, ANN202
+        if ".backup." in path.name:
+            raise OSError("cleanup unavailable")
+        return real_rmtree(path)
+
+    monkeypatch.setattr("scribebase.extraction.durable_rmtree", fail_backup_cleanup)
+
+    with caplog.at_level(logging.WARNING):
+        recovered = _extract(source, "Source", config, source_id="stable-source")
+
+    assert recovered.source_id == "stable-source"
+    assert (root / "markdown" / "document.md").exists()
+    assert list(root.parent.glob(".stable-source.backup.*"))
+    assert "could not remove old backup" in caplog.text
+
+
 def test_concurrent_default_ingestion_publishes_one_identity(tmp_path) -> None:
     config = default_config()
     config.data_dir = tmp_path / "data"

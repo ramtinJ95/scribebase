@@ -174,6 +174,7 @@ def extract_source(
             identity_key,
             owner_id,
             duplicate_policy,
+            logger,
         )
     finally:
         if heartbeat_stop is not None and heartbeat_thread is not None:
@@ -242,6 +243,7 @@ def _publish_staged_source(
     identity_key: str,
     owner_id: str,
     duplicate_policy: str,
+    logger,
 ) -> SourceManifest:
     staged_root = Path(manifest.data_dir)
     for path in (staged_root / "metadata").glob("page_*.json"):
@@ -282,7 +284,15 @@ def _publish_staged_source(
                 durable_replace(backup, live_root)
             raise
         else:
-            durable_rmtree(backup)
+            try:
+                durable_rmtree(backup)
+            except OSError as exc:
+                logger.warning(
+                    "Published source %s but could not remove old backup %s: %s",
+                    manifest.source_id,
+                    backup,
+                    exc,
+                )
     return manifest
 
 
