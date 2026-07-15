@@ -12,6 +12,13 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
+from .durable_fs import (
+    atomic_write_jsonl,
+    atomic_write_text,
+    durable_copy,
+    durable_replace,
+    durable_unlink,
+)
 from .models import SourceManifest, normalize_tags
 from .paths import source_dir, source_subdirs, validate_source_id
 
@@ -44,7 +51,7 @@ def manifest_path(root: Path) -> Path:
 
 def write_manifest(manifest: SourceManifest) -> Path:
     path = manifest_path(Path(manifest.data_dir))
-    _write_atomic_text(path, manifest.model_dump_json(indent=2))
+    atomic_write_text(path, manifest.model_dump_json(indent=2))
     return path
 
 
@@ -207,9 +214,8 @@ def reserve_source_identity(
                 if reservation["owner_id"] != owner_id:
                     raise DuplicateSourceError(reservation["source_id"], identity_key)
                 return False
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(f"{path.suffix}.{uuid4().hex}.tmp")
-        temporary.write_text(
+        atomic_write_text(
+            path,
             json.dumps(
                 {
                     "identity_key": identity_key,
@@ -220,9 +226,8 @@ def reserve_source_identity(
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 },
                 indent=2,
-            )
+            ),
         )
-        temporary.replace(path)
         return True
 
 
@@ -233,7 +238,7 @@ def release_source_identity(data_dir: Path, identity_key: str, owner_id: str) ->
             return
         reservation = _read_identity_reservation(path)
         if reservation is not None and reservation["owner_id"] == owner_id:
-            path.unlink()
+            durable_unlink(path)
 
 
 def refresh_source_identity_reservation(data_dir: Path, identity_key: str, owner_id: str) -> bool:
@@ -245,9 +250,7 @@ def refresh_source_identity_reservation(data_dir: Path, identity_key: str, owner
         if reservation is None or reservation["owner_id"] != owner_id:
             return False
         reservation["updated_at"] = datetime.now(timezone.utc).isoformat()
-        temporary = path.with_suffix(f"{path.suffix}.{uuid4().hex}.tmp")
-        temporary.write_text(json.dumps(reservation, indent=2))
-        temporary.replace(path)
+        atomic_write_text(path, json.dumps(reservation, indent=2))
         return True
 
 
@@ -457,16 +460,16 @@ def _install_manifest_batch(data_dir: Path, manifests: list[SourceManifest]) -> 
         staged = live.with_suffix(f"{live.suffix}.{transaction_id}.stage")
         backup = live.with_suffix(f"{live.suffix}.{transaction_id}.backup")
         entries.append({"live": str(live), "staged": str(staged), "backup": str(backup)})
-    _write_atomic_text(marker, json.dumps({"entries": entries}, indent=2))
+    atomic_write_text(marker, json.dumps({"entries": entries}, indent=2))
     try:
         for manifest, entry in zip(manifests, entries):
             staged = Path(entry["staged"])
             backup = Path(entry["backup"])
             live = Path(entry["live"])
-            staged.write_text(manifest.model_dump_json(indent=2))
-            shutil.copy2(live, backup)
+            atomic_write_text(staged, manifest.model_dump_json(indent=2))
+            durable_copy(live, backup)
         for entry in entries:
-            Path(entry["staged"]).replace(entry["live"])
+            durable_replace(Path(entry["staged"]), Path(entry["live"]))
     except Exception:
         _restore_manifest_entries(entries)
         _cleanup_manifest_transaction(marker, entries)
@@ -491,27 +494,17 @@ def _restore_manifest_entries(entries: list[dict]) -> None:
         if backup.exists():
             temporary = Path(entry["live"]).with_suffix(f".restore.{uuid4().hex}.tmp")
             try:
-                shutil.copy2(backup, temporary)
-                temporary.replace(entry["live"])
+                durable_copy(backup, temporary)
+                durable_replace(temporary, Path(entry["live"]))
             finally:
                 temporary.unlink(missing_ok=True)
 
 
 def _cleanup_manifest_transaction(marker: Path, entries: list[dict]) -> None:
-    marker.unlink(missing_ok=True)
+    durable_unlink(marker, missing_ok=True)
     for entry in entries:
-        Path(entry["staged"]).unlink(missing_ok=True)
-        Path(entry["backup"]).unlink(missing_ok=True)
-
-
-def _write_atomic_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.{uuid4().hex}.tmp")
-    try:
-        temporary.write_text(content)
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+        durable_unlink(Path(entry["staged"]), missing_ok=True)
+        durable_unlink(Path(entry["backup"]), missing_ok=True)
 
 
 def _hash_file(path: Path, digest) -> None:  # noqa: ANN001
@@ -534,10 +527,7 @@ def copy_original(input_path: Path, dest_dir: Path) -> Path:
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as f:
-        for row in rows:
-            f.write(json.dumps(row, default=str, ensure_ascii=False) + "\n")
+    atomic_write_jsonl(path, rows)
 
 
 def read_jsonl(path: Path) -> list[dict]:

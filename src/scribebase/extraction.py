@@ -10,6 +10,7 @@ from typing import Literal, TypeVar
 from uuid import uuid4
 
 from scribebase.config import AppConfig
+from scribebase.durable_fs import durable_replace, durable_rmtree, sync_tree
 from scribebase.extractors.pymupdf_extractor import PDFDocument
 from scribebase.markdown.frontmatter import read_markdown_with_frontmatter
 from scribebase.markdown.normalize import combine_pages, normalize_page_markdown
@@ -253,6 +254,7 @@ def _publish_staged_source(
     manifest.original_path = str(live_root / Path(manifest.original_path).relative_to(staged_root))
     manifest.data_dir = str(live_root)
     manifest_path(staged_root).write_text(manifest.model_dump_json(indent=2))
+    sync_tree(staged_root)
     with source_registry_lock(data_dir):
         if duplicate_policy == "reject" and not identity_reservation_owned(
             data_dir, identity_key, owner_id
@@ -271,16 +273,16 @@ def _publish_staged_source(
             )
         backup = live_root.with_name(f".{live_root.name}.backup.{uuid4().hex}")
         if live_root.exists():
-            live_root.replace(backup)
+            durable_replace(live_root, backup)
         live_root.parent.mkdir(parents=True, exist_ok=True)
         try:
-            staged_root.replace(live_root)
+            durable_replace(staged_root, live_root)
         except Exception:
             if backup.exists() and not live_root.exists():
-                backup.replace(live_root)
+                durable_replace(backup, live_root)
             raise
         else:
-            shutil.rmtree(backup, ignore_errors=True)
+            durable_rmtree(backup)
     return manifest
 
 
@@ -288,12 +290,34 @@ def _recover_source_publication(live_root: Path) -> None:
     backups = sorted(live_root.parent.glob(f".{live_root.name}.backup.*"))
     if live_root.exists():
         for backup in backups:
-            shutil.rmtree(backup, ignore_errors=True)
+            durable_rmtree(backup)
         return
     if backups:
-        backups[-1].replace(live_root)
+        durable_replace(backups[-1], live_root)
         for backup in backups[:-1]:
-            shutil.rmtree(backup, ignore_errors=True)
+            durable_rmtree(backup)
+
+
+def recover_source_publications(data_dir: Path) -> int:
+    """Settle source-directory renames interrupted by process or machine loss."""
+    sources = data_dir / "sources"
+    if not sources.exists():
+        return 0
+    recovered = 0
+    with source_registry_lock(data_dir):
+        source_ids = {
+            backup.name[1:].split(".backup.", 1)[0]
+            for backup in sources.glob(".*.backup.*")
+            if ".backup." in backup.name
+        }
+        for source_id in sorted(source_ids):
+            try:
+                live_root = source_dir(data_dir, source_id)
+            except ValueError:
+                continue
+            _recover_source_publication(live_root)
+            recovered += 1
+    return recovered
 
 
 def _start_identity_heartbeat(

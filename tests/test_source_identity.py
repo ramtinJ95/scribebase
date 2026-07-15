@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from scribebase.config import default_config
-from scribebase.extraction import extract_source
+from scribebase.extraction import extract_source, recover_source_publications
 from scribebase.models import SourceManifest
 from scribebase.source_registry import (
     DuplicateSourceError,
@@ -390,7 +390,8 @@ def test_backfill_rolls_back_all_manifests_on_install_failure(tmp_path, monkeypa
                 updated_at=now,
             )
         )
-    real_replace = Path.replace
+    from scribebase.durable_fs import durable_replace as real_replace
+
     stage_replaces = 0
 
     def fail_second_stage(path, target):  # noqa: ANN001, ANN202
@@ -401,12 +402,42 @@ def test_backfill_rolls_back_all_manifests_on_install_failure(tmp_path, monkeypa
                 raise OSError("install failed")
         return real_replace(path, target)
 
-    monkeypatch.setattr(Path, "replace", fail_second_stage)
+    monkeypatch.setattr("scribebase.source_registry.durable_replace", fail_second_stage)
 
     with pytest.raises(OSError, match="install failed"):
         backfill_source_identities(data_dir)
 
     assert all(manifest.identity_key is None for manifest in list_manifests(data_dir))
+
+
+def test_startup_recovers_source_moved_to_publication_backup(tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    sources = data_dir / "sources"
+    backup = sources / ".source-1.backup.transaction"
+    (backup / "markdown").mkdir(parents=True)
+    (backup / "markdown" / "document.md").write_text("complete source")
+
+    assert recover_source_publications(data_dir) == 1
+
+    live = sources / "source-1"
+    assert (live / "markdown" / "document.md").read_text() == "complete source"
+    assert not backup.exists()
+
+
+def test_startup_keeps_published_source_and_removes_old_backup(tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    sources = data_dir / "sources"
+    live = sources / "source-1"
+    backup = sources / ".source-1.backup.transaction"
+    live.mkdir(parents=True)
+    backup.mkdir(parents=True)
+    (live / "generation").write_text("new")
+    (backup / "generation").write_text("old")
+
+    assert recover_source_publications(data_dir) == 1
+
+    assert (live / "generation").read_text() == "new"
+    assert not backup.exists()
     assert not (data_dir / "sources" / ".manifest-transaction.json").exists()
 
 
