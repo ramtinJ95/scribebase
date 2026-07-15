@@ -283,6 +283,7 @@ def _rebuild_index(
                 "kind": "rebuild",
                 "state": "prepared",
                 "staging_collection": staging,
+                "expected_count": expected,
                 "previous_collection": None,
                 "files": [
                     {"staged": str(staged), "live": str(live)}
@@ -513,6 +514,13 @@ def _recover_index_transactions(config: AppConfig, logger) -> None:  # noqa: ANN
         store = WeaviateStore(config.weaviate)
         try:
             staging = transaction["staging_collection"]
+            expected_count = transaction["expected_count"]
+            actual_count = store.object_count(staging)
+            if actual_count != expected_count:
+                raise RuntimeError(
+                    f"Interrupted rebuild collection is incomplete: expected {expected_count} "
+                    f"chunks in {staging}, found {actual_count}"
+                )
             alias_target = store.alias_target()
             if alias_target != staging:
                 if transaction["state"] != "prepared":

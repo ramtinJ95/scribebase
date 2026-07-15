@@ -611,6 +611,7 @@ def test_finishes_promoted_full_rebuild_after_restart(tmp_path, monkeypatch) -> 
                 "kind": "rebuild",
                 "state": "promoted",
                 "staging_collection": "ChunkBuild1",
+                "expected_count": 1,
                 "previous_collection": "ChunkOld",
                 "files": [{"staged": str(staged), "live": str(live)}],
             }
@@ -625,6 +626,9 @@ def test_finishes_promoted_full_rebuild_after_restart(tmp_path, monkeypatch) -> 
 
         def alias_target(self) -> str:
             return "ChunkBuild1"
+
+        def object_count(self, _name: str) -> int:
+            return 1
 
         def delete_collection(self, name: str) -> None:
             self.deleted.append(name)
@@ -659,6 +663,7 @@ def test_finishes_full_rebuild_if_power_fails_during_alias_promotion(
                 "kind": "rebuild",
                 "state": "prepared",
                 "staging_collection": "ChunkBuild1",
+                "expected_count": 1,
                 "previous_collection": None,
                 "files": [{"staged": str(staged), "live": str(live)}],
             }
@@ -673,6 +678,9 @@ def test_finishes_full_rebuild_if_power_fails_during_alias_promotion(
 
         def alias_target(self) -> str:
             return "ChunkOld"
+
+        def object_count(self, _name: str) -> int:
+            return 1
 
         def promote_collection(self, name: str) -> str:
             self.promoted.append(name)
@@ -691,6 +699,53 @@ def test_finishes_full_rebuild_if_power_fails_during_alias_promotion(
     assert Store.promoted == ["ChunkBuild1"]
     assert live.read_text() == "new\n"
     assert not journal.exists()
+
+
+def test_does_not_promote_incomplete_rebuild_after_restart(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    staged = tmp_path / "staged.json"
+    live = tmp_path / "live.json"
+    staged.write_text("new\n")
+    live.write_text("old\n")
+    journal = tmp_path / ".index-rebuild-transaction.json"
+    journal.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "kind": "rebuild",
+                "state": "prepared",
+                "staging_collection": "ChunkBuild1",
+                "expected_count": 2,
+                "previous_collection": None,
+                "files": [{"staged": str(staged), "live": str(live)}],
+            }
+        )
+    )
+
+    class Store:
+        promoted = []
+
+        def __init__(self, _config) -> None:  # noqa: ANN001
+            pass
+
+        def object_count(self, _name: str) -> int:
+            return 1
+
+        def promote_collection(self, name: str) -> None:
+            self.promoted.append(name)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("scribebase.indexing.WeaviateStore", Store)
+
+    with pytest.raises(RuntimeError, match="Interrupted rebuild collection is incomplete"):
+        recover_index_transactions(config, Logger())
+
+    assert Store.promoted == []
+    assert live.read_text() == "old\n"
+    assert journal.exists()
 
 
 def test_index_lock_rejects_concurrent_mutation(tmp_path) -> None:  # noqa: ANN001
