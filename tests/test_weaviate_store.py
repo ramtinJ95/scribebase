@@ -292,6 +292,55 @@ def test_batch_stream_failure_is_typed_at_store_boundary() -> None:
         store.upsert_chunks([chunk], [[1.0, 0.0]])
 
 
+def test_failed_batch_objects_preserve_dependency_retryability() -> None:
+    class Batch:
+        failed_objects = [
+            type(
+                "FailedObject",
+                (),
+                {"message": "WeaviateBatchSendError('connection lost')"},
+            )()
+        ]
+
+        def dynamic(self):  # noqa: ANN201
+            return self
+
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, *_args) -> None:  # noqa: ANN002
+            pass
+
+        def add_object(self, **_kwargs) -> None:  # noqa: ANN003
+            pass
+
+    collection = type("Collection", (), {"batch": Batch()})()
+    collections = type("Collections", (), {"use": lambda self, _name: collection})()
+    store = weaviate_store.WeaviateStore(weaviate_store.WeaviateConfig())
+    store.client = type("Client", (), {"collections": collections})()
+    store.ensure_collection = lambda: None
+    chunk = Chunk(
+        chunk_id="chunk-1",
+        source_id="source-1",
+        source_type="notes",
+        title="Notes",
+        chunk_index=0,
+        text="text",
+        file_path="document.md",
+        extraction_method="markdown",
+    )
+
+    with pytest.raises(DependencyUnavailableError, match="connection lost"):
+        store.upsert_chunks([chunk], [[1.0, 0.0]])
+
+
+def test_failed_batch_objects_keep_permanent_errors_explicit() -> None:
+    failed = [type("FailedObject", (), {"message": "vector dimension mismatch"})()]
+
+    with pytest.raises(RuntimeError, match="vector dimension mismatch"):
+        weaviate_store._raise_batch_failures(failed, "Failed to insert 1 chunk")
+
+
 def test_source_iteration_uses_cursor_pagination(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr("weaviate.classes.query.Filter", FakeFilter)
     chunks = [

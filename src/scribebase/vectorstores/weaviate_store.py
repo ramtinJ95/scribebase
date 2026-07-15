@@ -7,7 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from scribebase.config import WeaviateConfig
-from scribebase.errors import as_dependency_unavailable
+from scribebase.errors import as_dependency_unavailable, dependency_unavailable_from_messages
 from scribebase.models import Chunk, SearchFilters, SearchResult
 
 
@@ -272,8 +272,9 @@ class WeaviateStore:
                     )
             failed_objects = getattr(target_collection.batch, "failed_objects", None)
             if failed_objects:
-                raise RuntimeError(
-                    f"Failed to copy {len(failed_objects)} objects from {source} to {target}"
+                _raise_batch_failures(
+                    failed_objects,
+                    f"Failed to copy {len(failed_objects)} objects from {source} to {target}",
                 )
             if len(result.objects) < page_size:
                 return
@@ -304,7 +305,10 @@ class WeaviateStore:
                 )
         failed_objects = getattr(collection.batch, "failed_objects", None)
         if failed_objects:
-            raise RuntimeError(f"Failed to insert {len(failed_objects)} chunks into Weaviate")
+            _raise_batch_failures(
+                failed_objects,
+                f"Failed to insert {len(failed_objects)} chunks into Weaviate",
+            )
 
     @_dependency_errors
     def delete_chunks(self, chunk_ids: set[str]) -> None:
@@ -449,6 +453,15 @@ def build_filter(filters: SearchFilters):
     for clause in clauses[1:]:
         current = current & clause
     return current
+
+
+def _raise_batch_failures(failed_objects: list[Any], summary: str) -> None:
+    messages = [str(getattr(error, "message", error)) for error in failed_objects]
+    dependency_error = dependency_unavailable_from_messages(messages)
+    if dependency_error is not None:
+        raise dependency_error
+    details = "; ".join(messages[:3])
+    raise RuntimeError(f"{summary}: {details}" if details else summary)
 
 
 def _chunk_properties(chunk: Chunk) -> dict[str, Any]:
