@@ -1,11 +1,26 @@
 from __future__ import annotations
 
 import httpx
+import weaviate.exceptions as weaviate_exceptions
 from weaviate.exceptions import (
     UnexpectedStatusCodeError,
     WeaviateConnectionError,
     WeaviateRetryError,
     WeaviateTimeoutError,
+)
+
+
+_OPTIONAL_TRANSIENT_WEAVIATE_ERRORS = tuple(
+    error_type
+    for name in (
+        "WeaviateBatchError",
+        "WeaviateBatchFailedToReestablishStreamError",
+        "WeaviateBatchSendError",
+        "WeaviateBatchStreamError",
+        "WeaviateGRPCUnavailableError",
+        "WeaviateStartUpError",
+    )
+    if isinstance(error_type := getattr(weaviate_exceptions, name, None), type)
 )
 
 
@@ -23,7 +38,8 @@ def as_dependency_unavailable(exc: Exception) -> DependencyUnavailableError | No
             WeaviateConnectionError,
             WeaviateRetryError,
             WeaviateTimeoutError,
-        ),
+        )
+        + _OPTIONAL_TRANSIENT_WEAVIATE_ERRORS,
     ):
         return DependencyUnavailableError(str(exc).strip() or exc.__class__.__name__)
     if isinstance(exc, UnexpectedStatusCodeError) and (

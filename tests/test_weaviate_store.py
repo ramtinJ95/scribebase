@@ -3,7 +3,16 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from weaviate.exceptions import (
+    WeaviateBatchError,
+    WeaviateBatchFailedToReestablishStreamError,
+    WeaviateBatchSendError,
+    WeaviateBatchStreamError,
+    WeaviateGRPCUnavailableError,
+    WeaviateStartUpError,
+)
 
+from scribebase.errors import DependencyUnavailableError, as_dependency_unavailable
 from scribebase.models import Chunk, SearchFilters
 from scribebase.vectorstores import weaviate_store
 
@@ -231,6 +240,56 @@ def test_delete_source_rejects_partial_weaviate_deletion(monkeypatch) -> None:  
 
     with pytest.raises(RuntimeError, match="matched=2, successful=1, failed=1"):
         store.delete_source("source-1")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        WeaviateGRPCUnavailableError(),
+        WeaviateStartUpError("starting"),
+        WeaviateBatchError("connection lost"),
+        WeaviateBatchSendError("connection lost"),
+        WeaviateBatchStreamError("connection lost"),
+        WeaviateBatchFailedToReestablishStreamError("connection lost"),
+    ],
+)
+def test_transient_weaviate_errors_are_classified_as_dependency_outages(error) -> None:  # noqa: ANN001
+    assert isinstance(as_dependency_unavailable(error), DependencyUnavailableError)
+
+
+def test_batch_stream_failure_is_typed_at_store_boundary() -> None:
+    error = WeaviateBatchFailedToReestablishStreamError("service restarting")
+
+    class Batch:
+        failed_objects = []
+
+        def dynamic(self):  # noqa: ANN201
+            return self
+
+        def __enter__(self):  # noqa: ANN204
+            raise error
+
+        def __exit__(self, *_args) -> None:  # noqa: ANN002
+            pass
+
+    collection = type("Collection", (), {"batch": Batch()})()
+    collections = type("Collections", (), {"use": lambda self, _name: collection})()
+    store = weaviate_store.WeaviateStore(weaviate_store.WeaviateConfig())
+    store.client = type("Client", (), {"collections": collections})()
+    store.ensure_collection = lambda: None
+    chunk = Chunk(
+        chunk_id="chunk-1",
+        source_id="source-1",
+        source_type="notes",
+        title="Notes",
+        chunk_index=0,
+        text="text",
+        file_path="document.md",
+        extraction_method="markdown",
+    )
+
+    with pytest.raises(DependencyUnavailableError, match="failed to re-establish"):
+        store.upsert_chunks([chunk], [[1.0, 0.0]])
 
 
 def test_source_iteration_uses_cursor_pagination(monkeypatch) -> None:  # noqa: ANN001
