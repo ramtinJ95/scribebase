@@ -2,6 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+from weaviate.exceptions import (
+    WeaviateBatchError,
+    WeaviateBatchFailedToReestablishStreamError,
+    WeaviateBatchSendError,
+    WeaviateBatchStreamError,
+    WeaviateGRPCUnavailableError,
+    WeaviateStartUpError,
+)
+
+from scribebase.errors import DependencyUnavailableError, as_dependency_unavailable
 from scribebase.models import Chunk, SearchFilters
 from scribebase.vectorstores import weaviate_store
 
@@ -215,6 +226,138 @@ def test_promote_collection_atomically_updates_existing_alias() -> None:
     assert previous == "ChunkIndexOld"
     assert collections.deleted == []
     assert aliases.updated == [{"alias_name": "Chunk", "new_target_collection": "ChunkBuild1"}]
+
+
+def test_delete_source_rejects_partial_weaviate_deletion(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr("weaviate.classes.query.Filter", FakeFilter)
+    result = type("DeleteResult", (), {"matches": 2, "successful": 1, "failed": 1})()
+    data = type("Data", (), {"delete_many": lambda self, **_kwargs: result})()
+    collection = type("Collection", (), {"data": data})()
+    collections = type("Collections", (), {"use": lambda self, _name: collection})()
+    store = weaviate_store.WeaviateStore(weaviate_store.WeaviateConfig())
+    store.client = type("Client", (), {"collections": collections})()
+    store.ensure_collection = lambda: None
+
+    with pytest.raises(RuntimeError, match="matched=2, successful=1, failed=1"):
+        store.delete_source("source-1")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        WeaviateGRPCUnavailableError(),
+        WeaviateStartUpError("starting"),
+        WeaviateBatchError("connection lost"),
+        WeaviateBatchSendError("connection lost"),
+        WeaviateBatchStreamError("connection lost"),
+        WeaviateBatchFailedToReestablishStreamError("connection lost"),
+    ],
+)
+def test_transient_weaviate_errors_are_classified_as_dependency_outages(error) -> None:  # noqa: ANN001
+    assert isinstance(as_dependency_unavailable(error), DependencyUnavailableError)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        WeaviateBatchError("invalid property in batch object"),
+        WeaviateBatchSendError("schema validation failed"),
+        WeaviateBatchStreamError("StatusCode.INVALID_ARGUMENT"),
+    ],
+)
+def test_deterministic_generic_batch_errors_are_not_retryable(error) -> None:  # noqa: ANN001
+    assert as_dependency_unavailable(error) is None
+
+
+def test_batch_stream_failure_is_typed_at_store_boundary() -> None:
+    error = WeaviateBatchFailedToReestablishStreamError("service restarting")
+
+    class Batch:
+        failed_objects = []
+
+        def dynamic(self):  # noqa: ANN201
+            return self
+
+        def __enter__(self):  # noqa: ANN204
+            raise error
+
+        def __exit__(self, *_args) -> None:  # noqa: ANN002
+            pass
+
+    collection = type("Collection", (), {"batch": Batch()})()
+    collections = type("Collections", (), {"use": lambda self, _name: collection})()
+    store = weaviate_store.WeaviateStore(weaviate_store.WeaviateConfig())
+    store.client = type("Client", (), {"collections": collections})()
+    store.ensure_collection = lambda: None
+    chunk = Chunk(
+        chunk_id="chunk-1",
+        source_id="source-1",
+        source_type="notes",
+        title="Notes",
+        chunk_index=0,
+        text="text",
+        file_path="document.md",
+        extraction_method="markdown",
+    )
+
+    with pytest.raises(DependencyUnavailableError, match="failed to re-establish"):
+        store.upsert_chunks([chunk], [[1.0, 0.0]])
+
+
+def test_failed_batch_objects_preserve_dependency_retryability() -> None:
+    class Batch:
+        failed_objects = [
+            type(
+                "FailedObject",
+                (),
+                {"message": "WeaviateBatchSendError('connection lost')"},
+            )()
+        ]
+
+        def dynamic(self):  # noqa: ANN201
+            return self
+
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, *_args) -> None:  # noqa: ANN002
+            pass
+
+        def add_object(self, **_kwargs) -> None:  # noqa: ANN003
+            pass
+
+    collection = type("Collection", (), {"batch": Batch()})()
+    collections = type("Collections", (), {"use": lambda self, _name: collection})()
+    store = weaviate_store.WeaviateStore(weaviate_store.WeaviateConfig())
+    store.client = type("Client", (), {"collections": collections})()
+    store.ensure_collection = lambda: None
+    chunk = Chunk(
+        chunk_id="chunk-1",
+        source_id="source-1",
+        source_type="notes",
+        title="Notes",
+        chunk_index=0,
+        text="text",
+        file_path="document.md",
+        extraction_method="markdown",
+    )
+
+    with pytest.raises(DependencyUnavailableError, match="connection lost"):
+        store.upsert_chunks([chunk], [[1.0, 0.0]])
+
+
+def test_failed_batch_objects_keep_permanent_errors_explicit() -> None:
+    failed = [type("FailedObject", (), {"message": "vector dimension mismatch"})()]
+
+    with pytest.raises(RuntimeError, match="vector dimension mismatch"):
+        weaviate_store._raise_batch_failures(failed, "Failed to insert 1 chunk")
+
+
+def test_failed_batch_dependency_matching_is_case_insensitive() -> None:
+    failed = [type("FailedObject", (), {"message": "Connection reset by peer"})()]
+
+    with pytest.raises(DependencyUnavailableError, match="Connection reset by peer"):
+        weaviate_store._raise_batch_failures(failed, "Failed to insert 1 chunk")
 
 
 def test_source_iteration_uses_cursor_pagination(monkeypatch) -> None:  # noqa: ANN001

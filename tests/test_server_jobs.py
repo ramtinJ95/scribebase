@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
@@ -8,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from scribebase.config import default_config
+from scribebase.errors import DependencyUnavailableError
 from scribebase.extraction import extract_source
 from scribebase.logging_utils import setup_logging
 from scribebase.models import SourceManifest
@@ -15,6 +17,7 @@ from scribebase.server_jobs import (
     QueueFullError,
     UnsupportedUploadError,
     UploadTooLargeError,
+    _worker_heartbeat,
     _worker_lock,
     claim_next_job,
     create_ingest_job,
@@ -36,6 +39,38 @@ def _claim(config, job):  # noqa: ANN001, ANN202
     assert claimed is not None
     assert claimed.job_id == job.job_id
     return claimed
+
+
+def _extracted_index_job(config, tmp_path):  # noqa: ANN001, ANN202
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        BytesIO(b"note"),
+        "Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        False,
+        False,
+    )
+    now = datetime.now(timezone.utc)
+    source_root = tmp_path / "sources" / (job.source_id or "")
+    write_manifest(
+        SourceManifest(
+            source_id=job.source_id or "",
+            title="Notes",
+            source_type="notes",
+            original_path=str(source_root / "original" / "notes.txt"),
+            data_dir=str(source_root),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    job.phase = "extracted"
+    write_job(tmp_path, job)
+    return job
 
 
 def test_run_ingest_job_marks_success_and_indexes(tmp_path, monkeypatch) -> None:
@@ -92,6 +127,9 @@ def test_run_ingest_job_marks_success_and_indexes(tmp_path, monkeypatch) -> None
 
     monkeypatch.setattr("scribebase.server_jobs.extract_source", fake_extract)
     monkeypatch.setattr("scribebase.server_jobs.index_source", fake_index)
+    monkeypatch.setattr(
+        "scribebase.server_jobs._index_dependencies_ready", lambda _config: (True, "ready")
+    )
 
     claimed = _claim(config, job)
     run_ingest_job(job.job_id, claimed.claim_token or "", config)
@@ -132,6 +170,95 @@ def test_run_ingest_job_marks_failure(tmp_path, monkeypatch) -> None:
     saved = read_job(tmp_path, job.job_id)
     assert saved.status == "failed"
     assert saved.error == "boom"
+
+
+def test_successful_job_cleanup_failure_does_not_escape(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        BytesIO(b"note"),
+        "Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        True,
+        False,
+    )
+    warnings = []
+
+    class Logger:
+        def warning(self, *args) -> None:  # noqa: ANN002
+            warnings.append(args)
+
+    def fake_extract(*_args, **metadata):  # noqa: ANN002, ANN202
+        now = datetime.now(timezone.utc)
+        return SourceManifest(
+            source_id=metadata["source_id"],
+            title="Notes",
+            source_type="notes",
+            original_path=job.upload_path,
+            data_dir=str(tmp_path / "sources" / metadata["source_id"]),
+            created_at=now,
+            updated_at=now,
+        )
+
+    monkeypatch.setattr("scribebase.server_jobs.setup_logging", lambda _data_dir: Logger())
+    monkeypatch.setattr("scribebase.server_jobs.extract_source", fake_extract)
+    monkeypatch.setattr(
+        "scribebase.server_jobs.durable_unlink",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("cleanup failed")),
+    )
+
+    claimed = _claim(config, job)
+    run_ingest_job(job.job_id, claimed.claim_token or "", config)
+
+    assert read_job(tmp_path, job.job_id).status == "succeeded"
+    assert len(warnings) == 1
+
+
+def test_failed_job_identity_cleanup_failure_does_not_escape(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        BytesIO(b"note"),
+        "Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        True,
+        False,
+    )
+    warnings = []
+
+    class Logger:
+        def warning(self, *args) -> None:  # noqa: ANN002
+            warnings.append(args)
+
+    monkeypatch.setattr("scribebase.server_jobs.setup_logging", lambda _data_dir: Logger())
+    monkeypatch.setattr(
+        "scribebase.server_jobs.extract_source",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad input")),
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs.release_source_identity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("cleanup failed")),
+    )
+
+    claimed = _claim(config, job)
+    run_ingest_job(job.job_id, claimed.claim_token or "", config)
+
+    saved = read_job(tmp_path, job.job_id)
+    assert saved.status == "failed"
+    assert saved.error == "bad input"
+    assert len(warnings) == 1
 
 
 def test_run_ingest_job_passes_generic_metadata(tmp_path, monkeypatch) -> None:
@@ -248,6 +375,67 @@ def test_create_job_rejects_unsupported_upload_before_writing(tmp_path) -> None:
     assert not list((tmp_path / "uploads").glob("*"))
 
 
+def test_committed_job_survives_upload_reservation_cleanup_failure(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    monkeypatch.setattr(
+        "scribebase.server_jobs._release_reservation_unlocked",
+        lambda *_args: (_ for _ in ()).throw(OSError("directory sync failed")),
+    )
+
+    with pytest.warns(UserWarning, match="reservation cleanup could not be confirmed"):
+        job = create_ingest_job(
+            config,
+            "notes.txt",
+            BytesIO(b"durable note"),
+            "Notes",
+            "notes",
+            None,
+            None,
+            "en",
+            "auto",
+            False,
+            False,
+        )
+
+    assert read_job(tmp_path, job.job_id).status == "queued"
+    assert Path(job.upload_path).read_bytes() == b"durable note"
+    assert identity_reservation_owned(tmp_path, job.identity_key or "", job.job_id)
+
+
+def test_warning_failure_cannot_roll_back_committed_job(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    monkeypatch.setattr(
+        "scribebase.server_jobs._release_reservation_unlocked",
+        lambda *_args: (_ for _ in ()).throw(OSError("directory sync failed")),
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs.warnings.warn",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("warnings are errors")),
+    )
+
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        BytesIO(b"durable note"),
+        "Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        False,
+        False,
+    )
+
+    assert read_job(tmp_path, job.job_id).status == "queued"
+    assert Path(job.upload_path).read_bytes() == b"durable note"
+    assert identity_reservation_owned(tmp_path, job.identity_key or "", job.job_id)
+
+
 def test_create_job_enforces_active_queue_capacity(tmp_path) -> None:
     config = default_config()
     config.data_dir = tmp_path
@@ -331,11 +519,151 @@ def test_worker_once_recovers_and_processes_one_job(tmp_path, monkeypatch) -> No
     assert read_job(tmp_path, job.job_id).status == "running"
 
 
+def test_worker_fails_startup_on_permanent_index_recovery_error(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    (tmp_path / ".index-transaction.json").write_text("{")
+    monkeypatch.setattr(
+        "scribebase.server_jobs._weaviate_ready", lambda _config: (True, "ready")
+    )
+
+    with pytest.raises(RuntimeError, match="Unreadable index recovery journal"):
+        run_worker(config, once=True)
+
+    assert not (tmp_path / "jobs" / ".worker-heartbeat").exists()
+
+
+def test_worker_waits_without_heartbeat_while_recovery_dependency_is_down(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    (tmp_path / ".index-transaction.json").write_text("pending")
+    monkeypatch.setattr(
+        "scribebase.server_jobs._weaviate_ready",
+        lambda _config: (False, "Weaviate is starting"),
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs.recover_index_transactions",
+        lambda *_args: pytest.fail("recovery must wait for Weaviate"),
+    )
+
+    run_worker(config, once=True)
+
+    assert not (tmp_path / "jobs" / ".worker-heartbeat").exists()
+
+
+def test_weaviate_preflight_propagates_permanent_configuration_error(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    (tmp_path / ".index-transaction.json").write_text("pending")
+
+    class Store:
+        def __init__(self, _config) -> None:  # noqa: ANN001
+            pass
+
+        def is_ready(self) -> bool:
+            raise ValueError("invalid literal for int()")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("scribebase.server_jobs.WeaviateStore", Store)
+
+    with pytest.raises(ValueError, match="invalid literal"):
+        run_worker(config, once=True)
+
+
+def test_worker_retries_when_weaviate_drops_during_recovery(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    pending = iter([True, True, False, False])
+    recovery_attempts = []
+    sleeps = []
+
+    monkeypatch.setattr(
+        "scribebase.server_jobs.index_recovery_pending", lambda _data_dir: next(pending)
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs._weaviate_ready", lambda _config: (True, "ready")
+    )
+
+    def recover(*_args) -> None:  # noqa: ANN002
+        recovery_attempts.append(True)
+        if len(recovery_attempts) == 1:
+            raise DependencyUnavailableError("connection dropped")
+
+    monkeypatch.setattr("scribebase.server_jobs.recover_index_transactions", recover)
+    monkeypatch.setattr("scribebase.server_jobs.time.sleep", sleeps.append)
+    monkeypatch.setattr(
+        "scribebase.server_jobs.claim_next_job",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("worker loop reached")),
+    )
+
+    with pytest.raises(RuntimeError, match="worker loop reached"):
+        run_worker(config, once=False)
+
+    assert len(recovery_attempts) == 2
+    assert sleeps == [config.server.worker_dependency_retry_seconds]
+
+
+def test_worker_settles_journal_left_by_running_job_before_idling(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    journal = tmp_path / ".index-transaction.json"
+    job = type("ClaimedJob", (), {"job_id": "job-1", "claim_token": "claim-1"})()
+    claims = iter([job, None])
+    recovered = []
+
+    monkeypatch.setattr(
+        "scribebase.server_jobs.claim_next_job", lambda *_args: next(claims)
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs.run_ingest_job",
+        lambda *_args: journal.write_text("pending"),
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs._weaviate_ready", lambda _config: (True, "ready")
+    )
+
+    def recover(*_args) -> None:  # noqa: ANN002
+        assert not (tmp_path / "jobs" / ".worker-heartbeat").exists()
+        recovered.append(True)
+        journal.unlink()
+
+    monkeypatch.setattr("scribebase.server_jobs.recover_index_transactions", recover)
+
+    run_worker(config, once=True)
+
+    assert recovered == [True]
+    assert not journal.exists()
+
+
 def test_worker_lock_rejects_second_worker(tmp_path) -> None:
     with _worker_lock(tmp_path):
         with pytest.raises(RuntimeError, match="already running"):
             with _worker_lock(tmp_path):
                 pass
+
+
+def test_worker_heartbeat_does_not_use_durable_state_writes(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    config.server.worker_heartbeat_seconds = 60
+    monkeypatch.setattr(
+        "scribebase.server_jobs.atomic_write_text",
+        lambda *_args: pytest.fail("heartbeat must not force a durable storage flush"),
+    )
+
+    with _worker_heartbeat(config, "test-worker"):
+        heartbeat = tmp_path / "jobs" / ".worker-heartbeat"
+        assert json.loads(heartbeat.read_text())["worker_id"] == "test-worker"
+
+    assert not heartbeat.exists()
 
 
 def test_recovered_job_with_source_id_resumes_at_indexing(tmp_path, monkeypatch) -> None:  # noqa: ANN001
@@ -377,12 +705,122 @@ def test_recovered_job_with_source_id_resumes_at_indexing(tmp_path, monkeypatch)
         "scribebase.server_jobs.index_source",
         lambda source_id, *_args, **_kwargs: indexed.append(source_id),
     )
+    monkeypatch.setattr(
+        "scribebase.server_jobs._index_dependencies_ready", lambda _config: (True, "ready")
+    )
 
     claimed = _claim(config, job)
     run_ingest_job(job.job_id, claimed.claim_token or "", config)
 
     assert indexed == [job.source_id]
     assert read_job(tmp_path, job.job_id).status == "succeeded"
+
+
+def test_indexing_job_waits_for_dependencies_without_losing_upload(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        BytesIO(b"note"),
+        "Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        False,
+        False,
+    )
+    now = datetime.now(timezone.utc)
+    source_root = tmp_path / "sources" / (job.source_id or "")
+    write_manifest(
+        SourceManifest(
+            source_id=job.source_id or "",
+            title="Notes",
+            source_type="notes",
+            original_path=str(source_root / "original" / "notes.txt"),
+            data_dir=str(source_root),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    job.phase = "extracted"
+    write_job(tmp_path, job)
+    monkeypatch.setattr(
+        "scribebase.server_jobs._index_dependencies_ready",
+        lambda _config: (False, "Weaviate is starting"),
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs.index_source",
+        lambda *_args, **_kwargs: pytest.fail("indexing must wait for dependencies"),
+    )
+
+    claimed = _claim(config, job)
+    run_ingest_job(job.job_id, claimed.claim_token or "", config)
+
+    saved = read_job(tmp_path, job.job_id)
+    assert saved.status == "queued"
+    assert saved.phase == "indexing"
+    assert saved.next_attempt_at is not None
+    assert saved.finished_at is None
+    assert "Weaviate is starting" in (saved.error or "")
+    assert Path(saved.upload_path).read_bytes() == b"note"
+    assert claim_next_job(tmp_path, "too-early") is None
+
+
+def test_deterministic_index_error_is_not_reclassified_by_later_health(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    job = _extracted_index_job(config, tmp_path)
+    readiness_checks = 0
+
+    def ready_once(_config):  # noqa: ANN001, ANN202
+        nonlocal readiness_checks
+        readiness_checks += 1
+        if readiness_checks > 1:
+            pytest.fail("index errors must not be reclassified by a second health probe")
+        return True, "ready"
+
+    monkeypatch.setattr("scribebase.server_jobs._index_dependencies_ready", ready_once)
+    monkeypatch.setattr(
+        "scribebase.server_jobs.index_source",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("invalid chunks")),
+    )
+
+    claimed = _claim(config, job)
+    run_ingest_job(job.job_id, claimed.claim_token or "", config)
+
+    saved = read_job(tmp_path, job.job_id)
+    assert saved.status == "failed"
+    assert saved.error == "invalid chunks"
+    assert readiness_checks == 1
+
+
+def test_typed_index_dependency_failure_requeues_even_after_preflight(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    job = _extracted_index_job(config, tmp_path)
+    monkeypatch.setattr(
+        "scribebase.server_jobs._index_dependencies_ready", lambda _config: (True, "ready")
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs.index_source",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            DependencyUnavailableError("connection reset")
+        ),
+    )
+
+    claimed = _claim(config, job)
+    run_ingest_job(job.job_id, claimed.claim_token or "", config)
+
+    saved = read_job(tmp_path, job.job_id)
+    assert saved.status == "queued"
+    assert "connection reset" in (saved.error or "")
 
 
 def test_recovery_reuses_preassigned_source_after_extraction_crash(tmp_path) -> None:
@@ -426,7 +864,7 @@ def test_recovery_reuses_preassigned_source_after_extraction_crash(tmp_path) -> 
     assert read_job(tmp_path, job.job_id).phase == "completed"
 
 
-def test_recovery_detects_completed_index_operation(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+def test_recovery_replays_completed_index_operation_to_verify_weaviate(tmp_path, monkeypatch) -> None:  # noqa: ANN001
     config = default_config()
     config.data_dir = tmp_path
     job = create_ingest_job(
@@ -458,9 +896,13 @@ def test_recovery_detects_completed_index_operation(tmp_path, monkeypatch) -> No
     job.status = "running"
     job.phase = "indexing"
     write_job(tmp_path, job)
+    replayed = []
     monkeypatch.setattr(
         "scribebase.server_jobs.index_source",
-        lambda *_args, **_kwargs: pytest.fail("completed indexing must not repeat"),
+        lambda source_id, *_args, **_kwargs: replayed.append(source_id),
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs._index_dependencies_ready", lambda _config: (True, "ready")
     )
 
     recover_interrupted_jobs(tmp_path)
@@ -470,6 +912,7 @@ def test_recovery_detects_completed_index_operation(tmp_path, monkeypatch) -> No
     saved = read_job(tmp_path, job.job_id)
     assert saved.status == "succeeded"
     assert saved.phase == "completed"
+    assert replayed == [job.source_id]
 
 
 def test_corrupt_job_is_quarantined_without_blocking_queue(tmp_path) -> None:
@@ -560,6 +1003,40 @@ def test_queue_reconciliation_removes_expired_failed_upload(tmp_path) -> None:
     reconcile_queue_storage(config)
 
     assert not Path(job.upload_path).exists()
+
+
+def test_queue_reconciliation_preserves_active_atomic_upload(tmp_path) -> None:
+    config = default_config()
+    config.data_dir = tmp_path
+    config.server.failed_upload_retention_seconds = 0
+
+    class ReconcileDuringRead:
+        reconciled = False
+
+        def read(self, _size):  # noqa: ANN001, ANN201
+            if self.reconciled:
+                return b""
+            self.reconciled = True
+            temporary = next((tmp_path / "uploads").glob(".*.tmp"))
+            reconcile_queue_storage(config)
+            assert temporary.exists()
+            return b"durable note"
+
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        ReconcileDuringRead(),
+        "Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        False,
+        False,
+    )
+
+    assert Path(job.upload_path).read_bytes() == b"durable note"
 
 
 def test_losing_concurrent_retry_keeps_winner_identity_reservation(tmp_path) -> None:

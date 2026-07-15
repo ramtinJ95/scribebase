@@ -8,6 +8,8 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, model_validator
 
+from scribebase.durable_fs import atomic_write_text, durable_mkdir
+
 
 CONFIG_ENV = "SCRIBEBASE_CONFIG"
 DATA_DIR_ENV = "SCRIBEBASE_DATA_DIR"
@@ -87,6 +89,7 @@ class ServerConfig(BaseModel):
     max_active_jobs: int = Field(default=20, gt=0)
     max_upload_storage_bytes: int = Field(default=1024 * 1024 * 1024, gt=0)
     worker_poll_seconds: float = Field(default=2.0, gt=0)
+    worker_dependency_retry_seconds: float = Field(default=10.0, gt=0)
     worker_heartbeat_seconds: float = Field(default=2.0, gt=0)
     worker_stale_seconds: float = Field(default=15.0, gt=0)
     upload_reservation_timeout_seconds: int = Field(default=60 * 60, gt=0)
@@ -199,12 +202,12 @@ def write_default_config(
 ) -> Path:
     config = default_config()
     config.data_dir = data_dir
-    data_dir.mkdir(parents=True, exist_ok=True)
+    durable_mkdir(data_dir)
     path = config_path or data_dir / "config.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
+    durable_mkdir(path.parent)
     if path.exists() and not overwrite:
         return path
-    path.write_text(config_to_yaml(config))
+    atomic_write_text(path, config_to_yaml(config))
     return path
 
 

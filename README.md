@@ -358,6 +358,7 @@ server:
   max_active_jobs: 20
   max_upload_storage_bytes: 1073741824
   worker_poll_seconds: 2.0
+  worker_dependency_retry_seconds: 10.0
   worker_heartbeat_seconds: 2.0
   worker_stale_seconds: 15.0
   upload_reservation_timeout_seconds: 3600

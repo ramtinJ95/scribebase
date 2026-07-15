@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
+from functools import wraps
 from typing import Any
 from uuid import uuid4
 
 from scribebase.config import WeaviateConfig
+from scribebase.errors import as_dependency_unavailable, dependency_unavailable_from_messages
 from scribebase.models import Chunk, SearchFilters, SearchResult
 
 
@@ -42,6 +45,34 @@ WEAVIATE_CHUNK_PROPERTIES = {
 }
 
 
+def _dependency_errors(function):  # noqa: ANN001, ANN202
+    @wraps(function)
+    def wrapped(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        try:
+            return function(*args, **kwargs)
+        except Exception as exc:
+            dependency_error = as_dependency_unavailable(exc)
+            if dependency_error is None or dependency_error is exc:
+                raise
+            raise dependency_error from exc
+
+    return wrapped
+
+
+def _dependency_generator_errors(function):  # noqa: ANN001, ANN202
+    @wraps(function)
+    def wrapped(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        try:
+            yield from function(*args, **kwargs)
+        except Exception as exc:
+            dependency_error = as_dependency_unavailable(exc)
+            if dependency_error is None or dependency_error is exc:
+                raise
+            raise dependency_error from exc
+
+    return wrapped
+
+
 class CollectionAliasMigrationError(RuntimeError):
     def __init__(self, alias_name: str, target: str, backup: str | None = None):
         self.alias_name = alias_name
@@ -59,6 +90,7 @@ class WeaviateStore:
         self.config = config
         self.client = None
 
+    @_dependency_errors
     def connect(self):
         import weaviate
 
@@ -74,10 +106,12 @@ class WeaviateStore:
         if self.client is not None:
             self.client.close()
 
+    @_dependency_errors
     def is_ready(self) -> bool:
         client = self.client or self.connect()
         return bool(client.is_ready())
 
+    @_dependency_errors
     def ensure_collection(self) -> None:
         client = self.client or self.connect()
         if client.collections.exists(self.config.collection):
@@ -91,6 +125,7 @@ class WeaviateStore:
             target_collection=physical_name,
         )
 
+    @_dependency_errors
     def create_collection(self, name: str) -> None:
         from weaviate.classes.config import Configure, DataType, Property
 
@@ -139,6 +174,7 @@ class WeaviateStore:
             ],
         )
 
+    @_dependency_errors
     def promote_collection(self, target: str) -> str | None:
         client = self.client or self.connect()
         alias = client.alias.get(alias_name=self.config.collection)
@@ -152,11 +188,19 @@ class WeaviateStore:
             return previous
         backup = None
         if client.collections.exists(self.config.collection):
-            backup = f"{self.config.collection}Legacy{uuid4().hex[:10]}"
-            self.create_collection(backup)
-            self.copy_collection(self.config.collection, backup)
+            suffix = hashlib.sha256(target.encode()).hexdigest()[:10]
+            backup = f"{self.config.collection}Legacy{suffix}"
             source_count = self.object_count(self.config.collection)
+            backup_exists = client.collections.exists(backup)
+            if not backup_exists:
+                self.create_collection(backup)
+                self.copy_collection(self.config.collection, backup)
             backup_count = self.object_count(backup)
+            if backup_exists and backup_count != source_count:
+                self.delete_collection(backup)
+                self.create_collection(backup)
+                self.copy_collection(self.config.collection, backup)
+                backup_count = self.object_count(backup)
             if source_count != backup_count:
                 self.delete_collection(backup)
                 raise RuntimeError(
@@ -187,17 +231,26 @@ class WeaviateStore:
             raise CollectionAliasMigrationError(self.config.collection, target) from exc
         return backup
 
+    @_dependency_errors
+    def alias_target(self) -> str | None:
+        client = self.client or self.connect()
+        alias = client.alias.get(alias_name=self.config.collection)
+        return alias.collection if alias is not None else None
+
+    @_dependency_errors
     def delete_collection(self, name: str) -> None:
         client = self.client or self.connect()
         if client.collections.exists(name):
             client.collections.delete(name)
 
+    @_dependency_errors
     def object_count(self, collection_name: str | None = None) -> int:
         name = collection_name or self.config.collection
         collection = (self.client or self.connect()).collections.use(name)
         result = collection.aggregate.over_all(total_count=True)
         return int(result.total_count or 0)
 
+    @_dependency_errors
     def copy_collection(self, source: str, target: str, page_size: int = 100) -> None:
         source_collection = (self.client or self.connect()).collections.use(source)
         target_collection = (self.client or self.connect()).collections.use(target)
@@ -219,13 +272,15 @@ class WeaviateStore:
                     )
             failed_objects = getattr(target_collection.batch, "failed_objects", None)
             if failed_objects:
-                raise RuntimeError(
-                    f"Failed to copy {len(failed_objects)} objects from {source} to {target}"
+                _raise_batch_failures(
+                    failed_objects,
+                    f"Failed to copy {len(failed_objects)} objects from {source} to {target}",
                 )
             if len(result.objects) < page_size:
                 return
             after = result.objects[-1].uuid
 
+    @_dependency_errors
     def upsert_chunks(
         self,
         chunks: list[Chunk],
@@ -250,8 +305,12 @@ class WeaviateStore:
                 )
         failed_objects = getattr(collection.batch, "failed_objects", None)
         if failed_objects:
-            raise RuntimeError(f"Failed to insert {len(failed_objects)} chunks into Weaviate")
+            _raise_batch_failures(
+                failed_objects,
+                f"Failed to insert {len(failed_objects)} chunks into Weaviate",
+            )
 
+    @_dependency_errors
     def delete_chunks(self, chunk_ids: set[str]) -> None:
         from weaviate.util import generate_uuid5
 
@@ -262,6 +321,7 @@ class WeaviateStore:
         for chunk_id in chunk_ids:
             collection.data.delete_by_id(generate_uuid5(chunk_id))
 
+    @_dependency_generator_errors
     def iter_source_chunks(
         self,
         source_id: str,
@@ -296,13 +356,22 @@ class WeaviateStore:
                 return
             after = result.objects[-1].uuid
 
+    @_dependency_errors
     def delete_source(self, source_id: str) -> None:
         from weaviate.classes.query import Filter
 
         self.ensure_collection()
         collection = (self.client or self.connect()).collections.use(self.config.collection)
-        collection.data.delete_many(where=Filter.by_property("source_id").equal(source_id))
+        result = collection.data.delete_many(
+            where=Filter.by_property("source_id").equal(source_id)
+        )
+        if result.failed or result.successful != result.matches:
+            raise RuntimeError(
+                f"Incomplete Weaviate deletion for source {source_id}: "
+                f"matched={result.matches}, successful={result.successful}, failed={result.failed}"
+            )
 
+    @_dependency_errors
     def hybrid_search(
         self,
         query: str,
@@ -384,6 +453,15 @@ def build_filter(filters: SearchFilters):
     for clause in clauses[1:]:
         current = current & clause
     return current
+
+
+def _raise_batch_failures(failed_objects: list[Any], summary: str) -> None:
+    messages = [str(getattr(error, "message", error)) for error in failed_objects]
+    dependency_error = dependency_unavailable_from_messages(messages)
+    if dependency_error is not None:
+        raise dependency_error
+    details = "; ".join(messages[:3])
+    raise RuntimeError(f"{summary}: {details}" if details else summary)
 
 
 def _chunk_properties(chunk: Chunk) -> dict[str, Any]:

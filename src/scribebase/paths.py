@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import re
+from pathlib import Path
+
+from scribebase.durable_fs import durable_mkdir
 
 
 SOURCE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,199}")
@@ -14,7 +16,7 @@ def ensure_data_layout(data_dir: Path) -> None:
         "uploads",
         "jobs",
     ]:
-        (data_dir / rel).mkdir(parents=True, exist_ok=True)
+        durable_mkdir(data_dir / rel)
 
 
 def source_dir(data_dir: Path, source_id: str) -> Path:

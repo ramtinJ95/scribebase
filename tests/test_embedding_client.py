@@ -1,5 +1,9 @@
+import httpx
+import pytest
+
 from scribebase.config import EmbeddingConfig
 from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
+from scribebase.errors import DependencyUnavailableError
 
 
 class FakeResponse:
@@ -41,3 +45,23 @@ def test_query_embedding_uses_instruction(monkeypatch) -> None:
     client = LlamaCppEmbeddingClient(EmbeddingConfig(normalize=False, query_instruction="Q: "))
     client.embed_query("working memory")
     assert captured["input"] == ["Q: working memory"]
+
+
+def test_transport_failure_is_typed_as_dependency_unavailable(monkeypatch) -> None:  # noqa: ANN001
+    def fail_post(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr("scribebase.embeddings.llamacpp_client.httpx.post", fail_post)
+
+    with pytest.raises(DependencyUnavailableError, match="connection refused"):
+        LlamaCppEmbeddingClient(EmbeddingConfig()).embed_texts(["text"])
+
+
+def test_health_check_propagates_malformed_embedding_url(monkeypatch) -> None:  # noqa: ANN001
+    def invalid_url(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise httpx.UnsupportedProtocol("missing URL scheme")
+
+    monkeypatch.setattr("scribebase.embeddings.llamacpp_client.httpx.get", invalid_url)
+
+    with pytest.raises(httpx.UnsupportedProtocol, match="missing URL scheme"):
+        LlamaCppEmbeddingClient(EmbeddingConfig()).check_health()

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from scribebase.config import default_config
-from scribebase.extraction import extract_source
+from scribebase.extraction import extract_source, recover_source_publications
 from scribebase.models import SourceManifest
 from scribebase.source_registry import (
     DuplicateSourceError,
@@ -235,6 +235,34 @@ def test_same_id_recovery_replaces_stale_generated_files(tmp_path) -> None:
     assert (root / "markdown" / "document.md").exists()
 
 
+def test_backup_cleanup_failure_does_not_fail_published_source(
+    tmp_path, monkeypatch, caplog
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path / "data"
+    source = tmp_path / "source.txt"
+    source.write_text("content")
+    manifest = _extract(source, "Source", config, source_id="stable-source")
+    root = Path(manifest.data_dir)
+    (root / "markdown" / "document.md").unlink()
+    from scribebase.durable_fs import durable_rmtree as real_rmtree
+
+    def fail_backup_cleanup(path):  # noqa: ANN001, ANN202
+        if ".backup." in path.name:
+            raise OSError("cleanup unavailable")
+        return real_rmtree(path)
+
+    monkeypatch.setattr("scribebase.extraction.durable_rmtree", fail_backup_cleanup)
+
+    with caplog.at_level(logging.WARNING):
+        recovered = _extract(source, "Source", config, source_id="stable-source")
+
+    assert recovered.source_id == "stable-source"
+    assert (root / "markdown" / "document.md").exists()
+    assert list(root.parent.glob(".stable-source.backup.*"))
+    assert "could not remove old backup" in caplog.text
+
+
 def test_concurrent_default_ingestion_publishes_one_identity(tmp_path) -> None:
     config = default_config()
     config.data_dir = tmp_path / "data"
@@ -390,7 +418,8 @@ def test_backfill_rolls_back_all_manifests_on_install_failure(tmp_path, monkeypa
                 updated_at=now,
             )
         )
-    real_replace = Path.replace
+    from scribebase.durable_fs import durable_replace as real_replace
+
     stage_replaces = 0
 
     def fail_second_stage(path, target):  # noqa: ANN001, ANN202
@@ -401,13 +430,71 @@ def test_backfill_rolls_back_all_manifests_on_install_failure(tmp_path, monkeypa
                 raise OSError("install failed")
         return real_replace(path, target)
 
-    monkeypatch.setattr(Path, "replace", fail_second_stage)
+    monkeypatch.setattr("scribebase.source_registry.durable_replace", fail_second_stage)
 
     with pytest.raises(OSError, match="install failed"):
         backfill_source_identities(data_dir)
 
     assert all(manifest.identity_key is None for manifest in list_manifests(data_dir))
+
+
+def test_startup_recovers_source_moved_to_publication_backup(tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    sources = data_dir / "sources"
+    backup = sources / ".source-1.backup.transaction"
+    (backup / "markdown").mkdir(parents=True)
+    (backup / "markdown" / "document.md").write_text("complete source")
+
+    assert recover_source_publications(data_dir) == 1
+
+    live = sources / "source-1"
+    assert (live / "markdown" / "document.md").read_text() == "complete source"
+    assert not backup.exists()
+
+
+def test_startup_keeps_published_source_and_removes_old_backup(tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    sources = data_dir / "sources"
+    live = sources / "source-1"
+    backup = sources / ".source-1.backup.transaction"
+    live.mkdir(parents=True)
+    backup.mkdir(parents=True)
+    (live / "generation").write_text("new")
+    (backup / "generation").write_text("old")
+
+    assert recover_source_publications(data_dir) == 1
+
+    assert (live / "generation").read_text() == "new"
+    assert not backup.exists()
     assert not (data_dir / "sources" / ".manifest-transaction.json").exists()
+
+
+def test_startup_keeps_running_when_old_source_backup_cannot_be_removed(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    data_dir = tmp_path / "data"
+    sources = data_dir / "sources"
+    live = sources / "source-1"
+    backup = sources / ".source-1.backup.transaction"
+    live.mkdir(parents=True)
+    backup.mkdir(parents=True)
+    (live / "generation").write_text("new")
+    warnings = []
+
+    class Logger:
+        def warning(self, message: str) -> None:
+            warnings.append(message)
+
+    monkeypatch.setattr(
+        "scribebase.extraction.durable_rmtree",
+        lambda _path: (_ for _ in ()).throw(OSError("permission denied")),
+    )
+
+    assert recover_source_publications(data_dir, Logger()) == 1
+
+    assert (live / "generation").read_text() == "new"
+    assert backup.exists()
+    assert "old backup" in warnings[0]
 
 
 def test_concurrent_create_policy_same_id_cannot_overwrite_changed_content(tmp_path) -> None:
