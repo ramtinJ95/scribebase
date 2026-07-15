@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -152,11 +153,19 @@ class WeaviateStore:
             return previous
         backup = None
         if client.collections.exists(self.config.collection):
-            backup = f"{self.config.collection}Legacy{uuid4().hex[:10]}"
-            self.create_collection(backup)
-            self.copy_collection(self.config.collection, backup)
+            suffix = hashlib.sha256(target.encode()).hexdigest()[:10]
+            backup = f"{self.config.collection}Legacy{suffix}"
             source_count = self.object_count(self.config.collection)
+            backup_exists = client.collections.exists(backup)
+            if not backup_exists:
+                self.create_collection(backup)
+                self.copy_collection(self.config.collection, backup)
             backup_count = self.object_count(backup)
+            if backup_exists and backup_count != source_count:
+                self.delete_collection(backup)
+                self.create_collection(backup)
+                self.copy_collection(self.config.collection, backup)
+                backup_count = self.object_count(backup)
             if source_count != backup_count:
                 self.delete_collection(backup)
                 raise RuntimeError(
@@ -186,6 +195,11 @@ class WeaviateStore:
                 ) from exc
             raise CollectionAliasMigrationError(self.config.collection, target) from exc
         return backup
+
+    def alias_target(self) -> str | None:
+        client = self.client or self.connect()
+        alias = client.alias.get(alias_name=self.config.collection)
+        return alias.collection if alias is not None else None
 
     def delete_collection(self, name: str) -> None:
         client = self.client or self.connect()
