@@ -17,6 +17,7 @@ from uuid import uuid4
 from scribebase.config import AppConfig
 from scribebase.durable_fs import atomic_write, atomic_write_text, durable_replace, durable_unlink
 from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
+from scribebase.errors import DependencyUnavailableError
 from scribebase.extraction import extract_source, recover_source_publications
 from scribebase.indexing import index_recovery_pending, index_source, recover_index_transactions
 from scribebase.logging_utils import setup_logging
@@ -66,10 +67,6 @@ class QueueFullError(RuntimeError):
 
 
 class UnsupportedUploadError(ValueError):
-    pass
-
-
-class TransientDependencyError(RuntimeError):
     pass
 
 
@@ -332,20 +329,14 @@ def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
             _persist_claimed_job(config.data_dir, job, claim_token)
             ready, message = _index_dependencies_ready(config)
             if not ready:
-                raise TransientDependencyError(message)
+                raise DependencyUnavailableError(message)
             # Replaying an interrupted operation is deliberate. A matching local
             # operation ID cannot prove that Weaviate survived the same outage.
             index_source(manifest.source_id, config, logger, operation_id=job.job_id)
             job.phase = "completed"
         job.status = "succeeded"
     except Exception as exc:
-        retryable = isinstance(exc, TransientDependencyError)
-        if job.phase == "indexing" and not retryable:
-            ready, dependency_error = _index_dependencies_ready(config)
-            if not ready:
-                retryable = True
-                exc = TransientDependencyError(dependency_error)
-        if retryable:
+        if isinstance(exc, DependencyUnavailableError):
             job.status = "queued"
             job.error = f"Dependency unavailable; retry scheduled: {exc}"
             job.next_attempt_at = _now() + timedelta(

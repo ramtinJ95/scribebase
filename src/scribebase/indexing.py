@@ -17,6 +17,7 @@ from scribebase.durable_fs import (
     durable_unlink,
 )
 from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
+from scribebase.errors import DependencyUnavailableError, as_dependency_unavailable
 from scribebase.extraction import read_page_metadata
 from scribebase.models import Chunk, SourceManifest
 from scribebase.paths import chapter_file_name
@@ -158,6 +159,7 @@ def _index_source(
             )
             _finish_incremental_transaction(journal_path, transaction)
     except Exception as exc:
+        dependency_error = as_dependency_unavailable(exc)
         if (
             collection_name is None
             and mutation_started
@@ -169,15 +171,20 @@ def _index_source(
                 _finish_incremental_transaction(journal_path, transaction)
             except Exception as rollback_exc:
                 preserve_snapshot = True
-                raise RuntimeError(
+                message = (
                     f"Index update failed for {source_id}; restoring the previous vectors also failed: "
                     f"{rollback_exc}. Recovery snapshot preserved at {snapshot_path}"
-                ) from exc
+                )
+                if dependency_error or as_dependency_unavailable(rollback_exc):
+                    raise DependencyUnavailableError(message) from exc
+                raise RuntimeError(message) from exc
         elif collection_name is None and transaction is not None:
             if transaction["state"] == "prepared":
                 _finish_incremental_transaction(journal_path, transaction)
             else:
                 preserve_snapshot = True
+        if dependency_error is not None and dependency_error is not exc:
+            raise dependency_error from exc
         raise
     finally:
         store.close()

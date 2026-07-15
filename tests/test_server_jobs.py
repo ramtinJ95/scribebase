@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from scribebase.config import default_config
+from scribebase.errors import DependencyUnavailableError
 from scribebase.extraction import extract_source
 from scribebase.logging_utils import setup_logging
 from scribebase.models import SourceManifest
@@ -36,6 +37,38 @@ def _claim(config, job):  # noqa: ANN001, ANN202
     assert claimed is not None
     assert claimed.job_id == job.job_id
     return claimed
+
+
+def _extracted_index_job(config, tmp_path):  # noqa: ANN001, ANN202
+    job = create_ingest_job(
+        config,
+        "notes.txt",
+        BytesIO(b"note"),
+        "Notes",
+        "notes",
+        None,
+        None,
+        "en",
+        "auto",
+        False,
+        False,
+    )
+    now = datetime.now(timezone.utc)
+    source_root = tmp_path / "sources" / (job.source_id or "")
+    write_manifest(
+        SourceManifest(
+            source_id=job.source_id or "",
+            title="Notes",
+            source_type="notes",
+            original_path=str(source_root / "original" / "notes.txt"),
+            data_dir=str(source_root),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    job.phase = "extracted"
+    write_job(tmp_path, job)
+    return job
 
 
 def test_run_ingest_job_marks_success_and_indexes(tmp_path, monkeypatch) -> None:
@@ -476,6 +509,60 @@ def test_indexing_job_waits_for_dependencies_without_losing_upload(tmp_path, mon
     assert "Weaviate is starting" in (saved.error or "")
     assert Path(saved.upload_path).read_bytes() == b"note"
     assert claim_next_job(tmp_path, "too-early") is None
+
+
+def test_deterministic_index_error_is_not_reclassified_by_later_health(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    job = _extracted_index_job(config, tmp_path)
+    readiness_checks = 0
+
+    def ready_once(_config):  # noqa: ANN001, ANN202
+        nonlocal readiness_checks
+        readiness_checks += 1
+        if readiness_checks > 1:
+            pytest.fail("index errors must not be reclassified by a second health probe")
+        return True, "ready"
+
+    monkeypatch.setattr("scribebase.server_jobs._index_dependencies_ready", ready_once)
+    monkeypatch.setattr(
+        "scribebase.server_jobs.index_source",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("invalid chunks")),
+    )
+
+    claimed = _claim(config, job)
+    run_ingest_job(job.job_id, claimed.claim_token or "", config)
+
+    saved = read_job(tmp_path, job.job_id)
+    assert saved.status == "failed"
+    assert saved.error == "invalid chunks"
+    assert readiness_checks == 1
+
+
+def test_typed_index_dependency_failure_requeues_even_after_preflight(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    job = _extracted_index_job(config, tmp_path)
+    monkeypatch.setattr(
+        "scribebase.server_jobs._index_dependencies_ready", lambda _config: (True, "ready")
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs.index_source",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            DependencyUnavailableError("connection reset")
+        ),
+    )
+
+    claimed = _claim(config, job)
+    run_ingest_job(job.job_id, claimed.claim_token or "", config)
+
+    saved = read_job(tmp_path, job.job_id)
+    assert saved.status == "queued"
+    assert "connection reset" in (saved.error or "")
 
 
 def test_recovery_reuses_preassigned_source_after_extraction_crash(tmp_path) -> None:

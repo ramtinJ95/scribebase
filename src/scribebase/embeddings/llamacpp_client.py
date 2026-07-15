@@ -6,6 +6,7 @@ from typing import Iterable
 import httpx
 
 from scribebase.config import EmbeddingConfig
+from scribebase.errors import DependencyUnavailableError
 
 
 class LlamaCppEmbeddingClient:
@@ -16,16 +17,25 @@ class LlamaCppEmbeddingClient:
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        response = httpx.post(
-            f"{self.base_url}/embeddings",
-            json={
-                "model": self.config.model,
-                "input": texts,
-                "encoding_format": "float",
-            },
-            timeout=self.config.timeout_seconds,
-        )
-        response.raise_for_status()
+        try:
+            response = httpx.post(
+                f"{self.base_url}/embeddings",
+                json={
+                    "model": self.config.model,
+                    "input": texts,
+                    "encoding_format": "float",
+                },
+                timeout=self.config.timeout_seconds,
+            )
+            response.raise_for_status()
+        except httpx.TransportError as exc:
+            raise DependencyUnavailableError(f"Embedding service unavailable: {exc}") from exc
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code >= 500 or exc.response.status_code in {408, 425, 429}:
+                raise DependencyUnavailableError(
+                    f"Embedding service returned {exc.response.status_code}"
+                ) from exc
+            raise
         data = response.json().get("data", [])
         ordered = sorted(data, key=lambda item: item.get("index", 0))
         embeddings = [item["embedding"] for item in ordered]
