@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from scribebase.models import Chunk, SearchFilters
 from scribebase.vectorstores import weaviate_store
 
@@ -215,6 +217,20 @@ def test_promote_collection_atomically_updates_existing_alias() -> None:
     assert previous == "ChunkIndexOld"
     assert collections.deleted == []
     assert aliases.updated == [{"alias_name": "Chunk", "new_target_collection": "ChunkBuild1"}]
+
+
+def test_delete_source_rejects_partial_weaviate_deletion(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr("weaviate.classes.query.Filter", FakeFilter)
+    result = type("DeleteResult", (), {"matches": 2, "successful": 1, "failed": 1})()
+    data = type("Data", (), {"delete_many": lambda self, **_kwargs: result})()
+    collection = type("Collection", (), {"data": data})()
+    collections = type("Collections", (), {"use": lambda self, _name: collection})()
+    store = weaviate_store.WeaviateStore(weaviate_store.WeaviateConfig())
+    store.client = type("Client", (), {"collections": collections})()
+    store.ensure_collection = lambda: None
+
+    with pytest.raises(RuntimeError, match="matched=2, successful=1, failed=1"):
+        store.delete_source("source-1")
 
 
 def test_source_iteration_uses_cursor_pagination(monkeypatch) -> None:  # noqa: ANN001

@@ -315,7 +315,14 @@ class WeaviateStore:
 
         self.ensure_collection()
         collection = (self.client or self.connect()).collections.use(self.config.collection)
-        collection.data.delete_many(where=Filter.by_property("source_id").equal(source_id))
+        result = collection.data.delete_many(
+            where=Filter.by_property("source_id").equal(source_id)
+        )
+        if result.failed or result.successful != result.matches:
+            raise RuntimeError(
+                f"Incomplete Weaviate deletion for source {source_id}: "
+                f"matched={result.matches}, successful={result.successful}, failed={result.failed}"
+            )
 
     def hybrid_search(
         self,
