@@ -493,41 +493,46 @@ def run_worker(config: AppConfig, once: bool = False, poll_seconds: float | None
         recovered_sources = recover_source_publications(config.data_dir, logger)
         if recovered_sources:
             logger.warning("Recovered %s interrupted source publications", recovered_sources)
-        while index_recovery_pending(config.data_dir):
-            ready, message = _weaviate_ready(config)
-            if not ready:
-                logger.warning("Index recovery waiting for Weaviate: %s", message)
-                if once:
-                    return
-                time.sleep(config.server.worker_dependency_retry_seconds)
-                continue
-            # Journal/artifact errors are permanent until an operator intervenes.
-            # Let them fail startup instead of advertising a healthy idle worker.
-            try:
-                recover_index_transactions(config, logger)
-            except DependencyUnavailableError as exc:
-                logger.warning("Index recovery lost Weaviate; waiting to retry: %s", exc)
-                if once:
-                    return
-                time.sleep(config.server.worker_dependency_retry_seconds)
-                continue
-        with _worker_heartbeat(config, worker_id):
-            reconcile_queue_storage(config)
-            recover_interrupted_jobs(config.data_dir)
-            last_reconcile = time.monotonic()
-            while True:
-                if time.monotonic() - last_reconcile >= 60:
-                    reconcile_queue_storage(config)
-                    last_reconcile = time.monotonic()
-                job = claim_next_job(config.data_dir, worker_id)
-                if job is not None:
-                    run_ingest_job(job.job_id, job.claim_token or "", config)
+        while True:
+            while index_recovery_pending(config.data_dir):
+                ready, message = _weaviate_ready(config)
+                if not ready:
+                    logger.warning("Index recovery waiting for Weaviate: %s", message)
                     if once:
                         return
+                    time.sleep(config.server.worker_dependency_retry_seconds)
                     continue
-                if once:
-                    return
-                time.sleep(delay)
+                # Journal/artifact errors are permanent until an operator intervenes.
+                # Let them fail startup instead of advertising a healthy idle worker.
+                try:
+                    recover_index_transactions(config, logger)
+                except DependencyUnavailableError as exc:
+                    logger.warning("Index recovery lost Weaviate; waiting to retry: %s", exc)
+                    if once:
+                        return
+                    time.sleep(config.server.worker_dependency_retry_seconds)
+                    continue
+            with _worker_heartbeat(config, worker_id):
+                reconcile_queue_storage(config)
+                recover_interrupted_jobs(config.data_dir)
+                last_reconcile = time.monotonic()
+                while True:
+                    if index_recovery_pending(config.data_dir):
+                        break
+                    if time.monotonic() - last_reconcile >= 60:
+                        reconcile_queue_storage(config)
+                        last_reconcile = time.monotonic()
+                    job = claim_next_job(config.data_dir, worker_id)
+                    if job is not None:
+                        run_ingest_job(job.job_id, job.claim_token or "", config)
+                        if index_recovery_pending(config.data_dir):
+                            break
+                        if once:
+                            return
+                        continue
+                    if once:
+                        return
+                    time.sleep(delay)
 
 
 def read_job(data_dir: Path, job_id: str) -> IngestJob:

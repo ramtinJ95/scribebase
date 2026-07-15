@@ -525,7 +525,7 @@ def test_worker_waits_without_heartbeat_while_recovery_dependency_is_down(
 def test_worker_retries_when_weaviate_drops_during_recovery(tmp_path, monkeypatch) -> None:  # noqa: ANN001
     config = default_config()
     config.data_dir = tmp_path
-    pending = iter([True, True, False])
+    pending = iter([True, True, False, False])
     recovery_attempts = []
     sleeps = []
 
@@ -553,6 +553,40 @@ def test_worker_retries_when_weaviate_drops_during_recovery(tmp_path, monkeypatc
 
     assert len(recovery_attempts) == 2
     assert sleeps == [config.server.worker_dependency_retry_seconds]
+
+
+def test_worker_settles_journal_left_by_running_job_before_idling(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    journal = tmp_path / ".index-transaction.json"
+    job = type("ClaimedJob", (), {"job_id": "job-1", "claim_token": "claim-1"})()
+    claims = iter([job, None])
+    recovered = []
+
+    monkeypatch.setattr(
+        "scribebase.server_jobs.claim_next_job", lambda *_args: next(claims)
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs.run_ingest_job",
+        lambda *_args: journal.write_text("pending"),
+    )
+    monkeypatch.setattr(
+        "scribebase.server_jobs._weaviate_ready", lambda _config: (True, "ready")
+    )
+
+    def recover(*_args) -> None:  # noqa: ANN002
+        assert not (tmp_path / "jobs" / ".worker-heartbeat").exists()
+        recovered.append(True)
+        journal.unlink()
+
+    monkeypatch.setattr("scribebase.server_jobs.recover_index_transactions", recover)
+
+    run_worker(config, once=True)
+
+    assert recovered == [True]
+    assert not journal.exists()
 
 
 def test_worker_lock_rejects_second_worker(tmp_path) -> None:
