@@ -382,6 +382,7 @@ def _restore_source(
     snapshot_path: Path,
     batch_size: int,
 ) -> None:
+    _validate_snapshot(snapshot_path, source_id)
     store.delete_source(source_id)
     chunks: list[Chunk] = []
     vectors: list[list[float]] = []
@@ -393,6 +394,51 @@ def _restore_source(
             chunks, vectors = [], []
     if chunks:
         store.upsert_chunks(chunks, vectors)
+
+
+def _validate_snapshot(path: Path, source_id: str) -> None:
+    chunk_ids: set[str] = set()
+    try:
+        for row in _iter_jsonl(path):
+            chunk = Chunk.model_validate(row["chunk"])
+            if chunk.source_id != source_id:
+                raise ValueError(
+                    f"snapshot chunk {chunk.chunk_id!r} belongs to {chunk.source_id!r}"
+                )
+            if chunk.chunk_id in chunk_ids:
+                raise ValueError(f"duplicate snapshot chunk id: {chunk.chunk_id}")
+            chunk_ids.add(chunk.chunk_id)
+            vector = row["vector"]
+            if not isinstance(vector, list) or not vector:
+                raise ValueError(f"invalid vector for snapshot chunk: {chunk.chunk_id}")
+            if any(not isinstance(value, (int, float)) for value in vector):
+                raise ValueError(f"non-numeric vector for snapshot chunk: {chunk.chunk_id}")
+    except Exception as exc:
+        raise RuntimeError(f"Invalid index recovery snapshot: {path}: {exc}") from exc
+
+
+def _validate_staged_index_files(transaction: dict) -> None:
+    source_id = transaction["source_id"]
+    chunks_path = Path(transaction["staged_chunks"])
+    manifest_path = Path(transaction["staged_manifest"])
+    count = 0
+    try:
+        for row in _iter_jsonl(chunks_path):
+            chunk = Chunk.model_validate(row)
+            if chunk.source_id != source_id:
+                raise ValueError(
+                    f"staged chunk {chunk.chunk_id!r} belongs to {chunk.source_id!r}"
+                )
+            count += 1
+        if count == 0:
+            raise ValueError("staged chunk file is empty")
+        manifest = SourceManifest.model_validate_json(manifest_path.read_text())
+        if manifest.source_id != source_id:
+            raise ValueError(
+                f"staged manifest belongs to {manifest.source_id!r}, expected {source_id!r}"
+            )
+    except Exception as exc:
+        raise RuntimeError(f"Invalid staged index recovery files for {source_id}: {exc}") from exc
 
 
 def _iter_jsonl(path: Path) -> Iterator[dict]:
@@ -442,6 +488,7 @@ def _recover_index_transactions(config: AppConfig, logger) -> None:  # noqa: ANN
             _finish_incremental_transaction(incremental, transaction)
             logger.warning("Restored interrupted index update for %s", transaction["source_id"])
         elif state == "remote_committed":
+            _validate_staged_index_files(transaction)
             _install_staged_files(
                 [
                     (Path(transaction["staged_chunks"]), Path(transaction["live_chunks"])),

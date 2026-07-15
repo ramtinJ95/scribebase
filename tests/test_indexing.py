@@ -507,6 +507,56 @@ def test_recovers_interrupted_incremental_vector_mutation(tmp_path, monkeypatch)
     assert not snapshot.exists()
 
 
+def test_recovery_validates_entire_snapshot_before_deleting_vectors(
+    tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    config = default_config()
+    config.data_dir = tmp_path
+    snapshot = tmp_path / "snapshot.jsonl"
+    old_chunk = _chunk("source-1", 9, "old")
+    snapshot.write_text(
+        json.dumps({"chunk": old_chunk.model_dump(mode="json"), "vector": [0.5, 0.5]})
+        + "\n{truncated"
+    )
+    journal = tmp_path / ".index-transaction.json"
+    journal.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "kind": "incremental",
+                "state": "mutating",
+                "source_id": "source-1",
+                "snapshot": str(snapshot),
+                "staged_chunks": str(tmp_path / "staged-chunks"),
+                "live_chunks": str(tmp_path / "live-chunks"),
+                "staged_manifest": str(tmp_path / "staged-manifest"),
+                "live_manifest": str(tmp_path / "live-manifest"),
+            }
+        )
+    )
+
+    class Store:
+        deleted = []
+
+        def __init__(self, _config) -> None:  # noqa: ANN001
+            pass
+
+        def delete_source(self, source_id: str) -> None:
+            self.deleted.append(source_id)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("scribebase.indexing.WeaviateStore", Store)
+
+    with pytest.raises(RuntimeError, match="Invalid index recovery snapshot"):
+        recover_index_transactions(config, Logger())
+
+    assert Store.deleted == []
+    assert journal.exists()
+    assert snapshot.exists()
+
+
 def test_finishes_incremental_local_commit_after_remote_commit(tmp_path) -> None:
     config = default_config()
     config.data_dir = tmp_path
@@ -515,8 +565,10 @@ def test_finishes_incremental_local_commit_after_remote_commit(tmp_path) -> None
     live_chunks = tmp_path / "live-chunks.jsonl"
     live_manifest = tmp_path / "live-manifest.json"
     snapshot = tmp_path / "snapshot.jsonl"
-    staged_chunks.write_text("new chunks\n")
-    staged_manifest.write_text("new manifest\n")
+    chunk_content = json.dumps(_chunk("source-1", 0).model_dump(mode="json")) + "\n"
+    manifest_content = _manifest(tmp_path).model_dump_json(indent=2)
+    staged_chunks.write_text(chunk_content)
+    staged_manifest.write_text(manifest_content)
     snapshot.write_text("")
     journal = tmp_path / ".index-transaction.json"
     journal.write_text(
@@ -537,8 +589,8 @@ def test_finishes_incremental_local_commit_after_remote_commit(tmp_path) -> None
 
     recover_index_transactions(config, Logger())
 
-    assert live_chunks.read_text() == "new chunks\n"
-    assert live_manifest.read_text() == "new manifest\n"
+    assert live_chunks.read_text() == chunk_content
+    assert live_manifest.read_text() == manifest_content
     assert not journal.exists()
     assert not staged_chunks.exists()
     assert not staged_manifest.exists()
