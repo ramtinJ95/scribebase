@@ -28,6 +28,10 @@ def test_config_defaults_are_local_first() -> None:
     assert config.embedding.base_url == "http://localhost:8080/v1"
     assert config.embedding.model == "Qwen3-Embedding-4B-Q4_K_M.gguf"
     assert config.embedding.batch_size == 8
+    assert config.chunking.target_chars == 1200
+    assert config.chunking.overlap_chars == 150
+    assert config.chunking.min_chars == 250
+    assert config.chunking.chunker_version == "v2"
     assert config.ocr.providers["apple_vision"].render_dpi == 200
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 8765

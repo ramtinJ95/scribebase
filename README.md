@@ -293,7 +293,8 @@ Notes:
 - `--pooling last` is required for Qwen embedding models.
 - The model name in `.scribebase/config.yaml` must match the server model name.
 - ScribeBase stores embedding model metadata and rejects accidental mixed-model retrieval by default.
-- The default chunking settings are conservative enough for small local embedding models.
+- The default chunking profile targets 1,200 characters with 150 characters of overlap,
+  balancing passage coherence with precise local retrieval.
 
 ## Local data layout
 
@@ -335,6 +336,12 @@ embedding:
   base_url: "http://localhost:8080/v1"
   model: "Qwen3-Embedding-4B-Q4_K_M.gguf"
   batch_size: 8
+
+chunking:
+  target_chars: 1200
+  overlap_chars: 150
+  min_chars: 250
+  chunker_version: "v2"
 
 ocr:
   default_provider: "shell"
