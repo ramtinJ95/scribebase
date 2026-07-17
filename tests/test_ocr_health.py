@@ -83,6 +83,60 @@ def test_glm_ocr_health_rejects_server_without_vision(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
+    ("health_payload", "expected"),
+    [
+        ({"status": "error"}, "/health status is 'error'"),
+        ([], "/health response must be a JSON object"),
+    ],
+)
+def test_glm_ocr_health_rejects_unhealthy_payload(
+    monkeypatch,
+    health_payload,
+    expected,
+) -> None:  # noqa: ANN001
+    responses = {
+        "http://localhost:8082/health": health_payload,
+        "http://localhost:8082/v1/models": {"data": [{"id": "GLM-OCR"}]},
+        "http://localhost:8082/props": {
+            "model_alias": "GLM-OCR",
+            "modalities": {"vision": True},
+        },
+    }
+
+    def fake_get(url, **_kwargs):  # noqa: ANN001, ANN202
+        return httpx.Response(200, json=responses[url], request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    config = default_config()
+
+    ok, message = check_ocr_provider_health(
+        config.ocr.default_provider,
+        config.ocr.providers[config.ocr.default_provider],
+    )
+
+    assert ok is False
+    assert expected in message
+
+
+def test_glm_ocr_health_rejects_non_json_health_response(monkeypatch) -> None:
+    def fake_get(url, **_kwargs):  # noqa: ANN001, ANN202
+        if url.endswith("/health"):
+            return httpx.Response(200, text="not json", request=httpx.Request("GET", url))
+        raise AssertionError("models and props must not be checked after invalid health")
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    config = default_config()
+
+    ok, message = check_ocr_provider_health(
+        config.ocr.default_provider,
+        config.ocr.providers[config.ocr.default_provider],
+    )
+
+    assert ok is False
+    assert "/health response must be valid JSON" in message
+
+
+@pytest.mark.parametrize(
     ("models_payload", "props_payload", "expected"),
     [
         (None, {"model_alias": "GLM-OCR", "modalities": {"vision": True}}, "JSON object"),

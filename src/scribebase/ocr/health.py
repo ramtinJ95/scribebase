@@ -35,6 +35,11 @@ def check_ocr_provider_health(
     try:
         health = httpx.get(f"{root_url}/health", timeout=5)
         health.raise_for_status()
+        try:
+            health_payload = health.json()
+        except ValueError as exc:
+            raise ValueError("/health response must be valid JSON") from exc
+        _validate_health(health_payload)
         models = httpx.get(f"{provider.base_url.rstrip('/')}/models", timeout=5)
         models.raise_for_status()
         props = httpx.get(f"{root_url}/props", timeout=5)
@@ -120,6 +125,13 @@ def _model_ids(payload: Any) -> set[str]:
         if item.get(key)
     }
     return ids
+
+
+def _validate_health(payload: Any) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("/health response must be a JSON object")
+    if payload.get("status") != "ok":
+        raise ValueError(f"/health status is {payload.get('status')!r}, expected 'ok'")
 
 
 def _model_alias(payload: Any) -> str | None:
