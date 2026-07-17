@@ -138,6 +138,9 @@ def test_auto_skips_visually_blank_image_backed_pdf_page(tmp_path, monkeypatch) 
     pix.save(image)
     pdf = tmp_path / "blank-scan.pdf"
     doc = fitz.open()
+    for _ in range(3):
+        text_page = doc.new_page()
+        text_page.insert_text((72, 72), "This is a true text page. " * 40)
     page = doc.new_page()
     page.insert_image(fitz.Rect(72, 72, 200, 200), filename=image)
     doc.save(pdf)
@@ -162,10 +165,39 @@ def test_auto_skips_visually_blank_image_backed_pdf_page(tmp_path, monkeypatch) 
     )
 
     pages = read_page_metadata(Path(manifest.data_dir))
-    assert pages[0].extraction_method == "skipped"
-    assert pages[0].quality_flags[-1] == "blank_page"
+    assert pages[3].extraction_method == "skipped"
+    assert pages[3].quality_flags[-1] == "blank_page"
     assert manifest.extraction_summary.pages_ocr == 0
     assert manifest.extraction_summary.ocr_provider is None
+
+
+def test_all_blank_pdf_fails_instead_of_publishing_page_markers(tmp_path) -> None:
+    image = tmp_path / "blank-scan.png"
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
+    pix.clear_with(255)
+    pix.save(image)
+    pdf = tmp_path / "blank-scan.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_image(fitz.Rect(72, 72, 200, 200), filename=image)
+    doc.save(pdf)
+    doc.close()
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
+
+    with pytest.raises(RuntimeError, match="every page was blank"):
+        extract_source(
+            pdf,
+            title="Blank Scan",
+            source_type="book",
+            course=None,
+            chapter=None,
+            language="en",
+            ocr="auto",
+            config=config,
+            logger=logging.getLogger("test"),
+        )
+
+    assert not list((config.data_dir / "sources").glob("*/metadata/manifest.json"))
 
 
 def test_nonblank_page_with_empty_ocr_output_fails(tmp_path, monkeypatch) -> None:

@@ -210,6 +210,9 @@ def _extract_manifest(
     else:
         raise ValueError(f"Unsupported input type: {original}")
 
+    if pages and all(page.extraction_method == "skipped" for page in pages):
+        raise RuntimeError("Extraction produced no content: every page was blank")
+
     page_markdowns = [
         Path(page.markdown_path).read_text() for page in pages if Path(page.markdown_path).exists()
     ]
