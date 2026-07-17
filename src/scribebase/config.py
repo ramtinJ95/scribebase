@@ -52,20 +52,24 @@ class OCRProviderConfig(BaseModel):
     render_dpi: int | None = None
 
 
+def glm_ocr_provider_config() -> OCRProviderConfig:
+    return OCRProviderConfig(
+        command=(
+            "./scripts/run_local_ocr.py --input {input_image} --output {output_md} "
+            "--base-url {base_url} --model {model_name}"
+        ),
+        model_name="GLM-OCR",
+        base_url="http://localhost:8082/v1",
+        require_multimodal=True,
+    )
+
+
 class OCRConfig(BaseModel):
     default_provider: str = "glm_ocr"
     render_dpi: int = 300
     providers: dict[str, OCRProviderConfig] = Field(
         default_factory=lambda: {
-            "glm_ocr": OCRProviderConfig(
-                command=(
-                    "./scripts/run_local_ocr.py --input {input_image} --output {output_md} "
-                    "--base-url {base_url} --model {model_name}"
-                ),
-                model_name="GLM-OCR",
-                base_url="http://localhost:8082/v1",
-                require_multimodal=True,
-            ),
+            "glm_ocr": glm_ocr_provider_config(),
             "apple_vision": OCRProviderConfig(
                 command=(
                     "swift ./scripts/run_apple_vision_ocr.swift "
@@ -188,8 +192,47 @@ def load_config(config_path: Path | None = None) -> AppConfig:
         data: dict[str, Any] = {}
     else:
         data = yaml.safe_load(path.read_text()) or {}
+    data = migrate_legacy_ocr_config(data)
     data = deep_update(data, env_override_data())
     return AppConfig.model_validate(data)
+
+
+def migrate_legacy_ocr_config(data: dict[str, Any]) -> dict[str, Any]:
+    ocr = data.get("ocr")
+    if not isinstance(ocr, dict) or ocr.get("default_provider") not in {
+        "shell",
+        "apple_vision",
+    }:
+        return data
+    providers = ocr.get("providers")
+    if not isinstance(providers, dict):
+        providers = {}
+        ocr["providers"] = providers
+    if ocr["default_provider"] == "shell":
+        legacy = providers.get("shell")
+        if not _is_generated_legacy_glm_provider(legacy):
+            raise ValueError(
+                "Legacy OCR default_provider 'shell' is not a generated GLM-OCR "
+                "configuration. Rename the custom provider and select it explicitly, or "
+                "set default_provider to glm_ocr."
+            )
+        providers.pop("shell", None)
+    providers.setdefault(
+        "glm_ocr",
+        glm_ocr_provider_config().model_dump(mode="json"),
+    )
+    ocr["default_provider"] = "glm_ocr"
+    return data
+
+
+def _is_generated_legacy_glm_provider(provider: Any) -> bool:
+    if not isinstance(provider, dict):
+        return False
+    command = str(provider.get("command", ""))
+    return (
+        "scripts/run_local_ocr.py" in command
+        and provider.get("model_name", "GLM-OCR") == "GLM-OCR"
+    )
 
 
 def env_override_data() -> dict[str, Any]:

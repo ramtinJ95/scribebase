@@ -50,6 +50,62 @@ def test_config_round_trip(tmp_path) -> None:
     assert loaded.ocr.default_provider == "glm_ocr"
 
 
+def test_load_config_migrates_generated_legacy_shell_ocr(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """ocr:
+  default_provider: shell
+  providers:
+    shell:
+      command: ./scripts/run_local_ocr.py --input {input_image} --output {output_md}
+      timeout_seconds: 900
+      model_name: GLM-OCR
+"""
+    )
+
+    loaded = load_config(path)
+
+    assert loaded.ocr.default_provider == "glm_ocr"
+    assert "shell" not in loaded.ocr.providers
+    assert loaded.ocr.providers["glm_ocr"].base_url == "http://localhost:8082/v1"
+    assert loaded.ocr.providers["glm_ocr"].require_multimodal is True
+
+
+def test_load_config_migrates_apple_vision_as_implicit_default(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """ocr:
+  default_provider: apple_vision
+  providers:
+    apple_vision:
+      command: swift ./scripts/run_apple_vision_ocr.swift --input {input_image} --output {output_md}
+      model_name: Apple Vision
+"""
+    )
+
+    loaded = load_config(path)
+
+    assert loaded.ocr.default_provider == "glm_ocr"
+    assert loaded.ocr.providers["glm_ocr"].require_multimodal is True
+    assert "apple_vision" in loaded.ocr.providers
+
+
+def test_load_config_rejects_custom_legacy_shell_default(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        """ocr:
+  default_provider: shell
+  providers:
+    shell:
+      command: custom-ocr --input {input_image}
+      model_name: custom
+"""
+    )
+
+    with pytest.raises(ValueError, match="Rename the custom provider"):
+        load_config(path)
+
+
 def test_config_rejects_missing_default_ocr_provider() -> None:
     with pytest.raises(ValueError, match="default_provider is not configured: missing"):
         AppConfig.model_validate(
