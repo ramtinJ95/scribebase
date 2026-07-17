@@ -12,6 +12,7 @@ from scribebase.config import OCRProviderConfig
 GLM_OCR_START_COMMAND = (
     "llama-server --model ./models/ocr/GLM-OCR-Q8_0.gguf "
     "--mmproj ./models/ocr/mmproj-GLM-OCR-Q8_0.gguf --alias GLM-OCR "
+    "--ctx-size 8192 --parallel 1 --cache-ram 0 -ngl 0 "
     "--host 127.0.0.1 --port 8082"
 )
 

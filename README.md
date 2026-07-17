@@ -167,10 +167,11 @@ uv run scribebase ingest ./notes/lecture-1/ \
   --title "Lecture 1 Notes" \
   --source-type notes \
   --course "Neuroscience" \
-  --ocr shell
+  --ocr auto
 ```
 
-Image inputs always require OCR. Use `--ocr shell` for the default GLM-OCR adapter, or `--ocr apple_vision` on macOS.
+Image inputs always require OCR. `--ocr auto` uses GLM-OCR. Apple Vision is an
+explicit opt-in and is never used as an automatic fallback.
 
 ### Extract without indexing
 
@@ -232,24 +233,35 @@ is not used.
 Default high-quality OCR provider:
 
 ```bash
-uv run scribebase ingest ./scan.pdf --title "Scan" --source-type book --ocr shell
+uv run scribebase ingest ./scan.pdf --title "Scan" --source-type book --ocr auto
 ```
 
-The `shell` provider runs:
+The `glm_ocr` provider runs:
 
 ```bash
-./scripts/run_local_ocr.py --input {input_image} --output {output_md}
+./scripts/run_local_ocr.py --input {input_image} --output {output_md} \
+  --base-url http://localhost:8082/v1 --model GLM-OCR
 ```
 
-That adapter calls a local OpenAI-compatible vision endpoint, defaulting to `http://localhost:8082/v1`. Recommended GLM-OCR server:
+That adapter calls a separate local OpenAI-compatible vision endpoint on port
+8082. The embedding-only server remains on port 8080. Recommended GLM-OCR
+server:
 
 ```bash
 llama-server \
-  -m ./models/ocr/GLM-OCR-Q8_0.gguf \
+  --model ./models/ocr/GLM-OCR-Q8_0.gguf \
   --mmproj ./models/ocr/mmproj-GLM-OCR-Q8_0.gguf \
+  --alias GLM-OCR \
+  --ctx-size 8192 \
+  --parallel 1 \
+  --cache-ram 0 \
   -ngl 0 \
+  --host 127.0.0.1 \
   --port 8082
 ```
+
+See [Mac mini deployment](docs/macmini-deployment.md) for exact download and
+launchd setup commands.
 
 Fast macOS OCR provider:
 
@@ -267,13 +279,15 @@ Apple Vision uses `scripts/run_apple_vision_ocr.swift` and runs on-device.
 - `--ocr auto`: use OCR only when needed. This is the normal PDF mode.
 - `--ocr always`: force OCR for PDF pages using the default OCR provider.
 - `--ocr never`: disable OCR. PDF pages without usable text will fail; image inputs always fail.
-- `--ocr shell`: use the GLM-OCR shell provider when OCR is needed.
+- `--ocr glm_ocr`: explicitly use the GLM-OCR provider when OCR is needed.
 - `--ocr apple_vision`: use Apple Vision when OCR is needed.
 
 ScribeBase keeps one PyMuPDF document open for the extraction pass. If
 PyMuPDF4LLM fails or returns empty output for a text-routed page, ScribeBase
 uses the cached PyMuPDF text and records `pymupdf4llm_failed:*` or
 `pymupdf4llm_empty` in that page's quality flags instead of hiding the fallback.
+Rendered PDF pages with no meaningful dark pixels are recorded as skipped blank
+pages. Empty OCR output from any nonblank page remains a hard failure.
 
 ## Embeddings
 
@@ -344,17 +358,21 @@ chunking:
   chunker_version: "v2"
 
 ocr:
-  default_provider: "shell"
+  default_provider: "glm_ocr"
   render_dpi: 300
   providers:
-    shell:
-      command: "./scripts/run_local_ocr.py --input {input_image} --output {output_md}"
+    glm_ocr:
+      command: "./scripts/run_local_ocr.py --input {input_image} --output {output_md} --base-url {base_url} --model {model_name}"
       timeout_seconds: 900
       model_name: "GLM-OCR"
+      base_url: "http://localhost:8082/v1"
+      require_multimodal: true
     apple_vision:
       command: "swift ./scripts/run_apple_vision_ocr.swift --input {input_image} --output {output_md}"
       timeout_seconds: 120
       model_name: "Apple Vision"
+      base_url: null
+      require_multimodal: false
       render_dpi: 200
 
 server:
@@ -407,7 +425,7 @@ uv run scribebase worker
 
 Endpoints:
 
-- `GET /health`: readiness summary for ScribeBase, Weaviate, and embeddings.
+- `GET /health`: readiness summary for ScribeBase, Weaviate, embeddings, GLM-OCR, and the worker.
 - `GET /sources`: list indexed source manifests.
 - `POST /ingest`: upload a document and enqueue extraction/indexing.
 - `POST /articles`: submit Markdown/text article content as JSON and enqueue ingestion.
@@ -528,7 +546,7 @@ scribebase init
 scribebase doctor
 scribebase serve [--host HOST] [--port PORT]
 scribebase worker [--once]
-scribebase extract PATH --title TITLE [--ocr auto|always|never|shell|apple_vision]
+scribebase extract PATH --title TITLE [--ocr auto|always|never|glm_ocr|apple_vision]
 scribebase ingest PATH --title TITLE [--no-index]
 scribebase index --source-id SOURCE_ID
 scribebase rebuild-index --source-id SOURCE_ID

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GLM-OCR adapter for ScribeBase's shell OCR provider.
+"""GLM-OCR adapter for ScribeBase's command-backed OCR provider.
 
 Expected runtime: a local llama.cpp server exposing the OpenAI-compatible chat API.
 Recommended server:
@@ -8,7 +8,11 @@ llama-server \
   -m ./models/ocr/GLM-OCR-Q8_0.gguf \
   --mmproj ./models/ocr/mmproj-GLM-OCR-Q8_0.gguf \
   --alias GLM-OCR \
+  --ctx-size 8192 \
+  --parallel 1 \
+  --cache-ram 0 \
   -ngl 0 \
+  --host 127.0.0.1 \
   --port 8082
 """
 
@@ -118,7 +122,8 @@ def main() -> None:
         print(
             "Start the OCR server with: llama-server -m ./models/ocr/GLM-OCR-Q8_0.gguf "
             "--mmproj ./models/ocr/mmproj-GLM-OCR-Q8_0.gguf --alias GLM-OCR "
-            "-ngl 0 --port 8082",
+            "--ctx-size 8192 --parallel 1 --cache-ram 0 -ngl 0 "
+            "--host 127.0.0.1 --port 8082",
             file=sys.stderr,
         )
         raise SystemExit(1) from exc
