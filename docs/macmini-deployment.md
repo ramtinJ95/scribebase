@@ -184,6 +184,11 @@ ScribeBase reports the GLM-OCR service as unavailable and refuses to fall back
 to Apple Vision. `scribebase doctor` exits nonzero, and the API health response
 uses top-level `"status":"degraded"` while any required service is unavailable.
 
+Older generated configs whose default was `shell` or `apple_vision` are
+migrated to the configured `glm_ocr` provider when loaded. Update the YAML on
+the deployed machine as shown in the README as well, so the file reflects its
+effective runtime configuration.
+
 ## 6. Start the ScribeBase API and worker
 
 Start the API:

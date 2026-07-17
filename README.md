@@ -288,6 +288,8 @@ uses the cached PyMuPDF text and records `pymupdf4llm_failed:*` or
 `pymupdf4llm_empty` in that page's quality flags instead of hiding the fallback.
 Rendered PDF pages with no meaningful dark pixels are recorded as skipped blank
 pages. Empty OCR output from any nonblank page remains a hard failure.
+Documents containing only blank pages fail extraction instead of publishing
+page-marker-only content.
 
 ## Embeddings
 
@@ -409,6 +411,12 @@ SCRIBEBASE_API_TOKEN=change-me
 - `SCRIBEBASE_CONFIG`: explicit config path. Defaults to `$SCRIBEBASE_DATA_DIR/config.yaml`.
 - `SCRIBEBASE_HOST` and `SCRIBEBASE_PORT`: HTTP API bind address and port.
 - `SCRIBEBASE_API_TOKEN`: required API bearer token, read from the environment and not written to config.
+
+When loading an older generated configuration, ScribeBase migrates legacy
+`shell` and implicit `apple_vision` defaults to `glm_ocr` in memory. A custom
+provider named `shell` is rejected with an upgrade message rather than being
+silently treated as GLM-OCR. Apple Vision remains available through explicit
+`--ocr apple_vision` selection.
 
 See `.env.example` for a copyable template.
 
