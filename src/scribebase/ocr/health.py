@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 from pathlib import Path
@@ -100,6 +101,8 @@ def _check_command(provider: OCRProviderConfig) -> tuple[bool, str]:
         executable_path = Path(executable)
         if not executable_path.is_file():
             return False, f"Missing OCR executable: {executable}"
+        if not os.access(executable_path, os.X_OK):
+            return False, f"OCR executable is not executable: {executable}"
     elif shutil.which(executable) is None:
         return False, f"Missing OCR executable on PATH: {executable}"
     for part in parts[1:]:

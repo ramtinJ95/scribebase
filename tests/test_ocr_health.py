@@ -184,3 +184,15 @@ def test_ocr_health_rejects_missing_command_executable(tmp_path) -> None:
 
     assert ok is False
     assert "Missing OCR executable" in message
+
+
+def test_ocr_health_rejects_non_executable_command(tmp_path) -> None:
+    executable = tmp_path / "ocr-adapter"
+    executable.write_text("#!/bin/sh\n")
+    executable.chmod(0o644)
+    provider = OCRProviderConfig(command=str(executable))
+
+    ok, message = check_ocr_provider_health("custom", provider)
+
+    assert ok is False
+    assert "OCR executable is not executable" in message
