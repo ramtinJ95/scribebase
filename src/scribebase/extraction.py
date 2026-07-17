@@ -654,8 +654,15 @@ def _run_ocr_page(
 ) -> PageMetadata:
     logger.info("Page %s: OCR with %s provider", page_number, provider.name)
     try:
+        readiness_error = getattr(provider, "_readiness_error", None)
+        if readiness_error:
+            raise RuntimeError(readiness_error)
         if not getattr(provider, "_readiness_verified", False):
-            ensure_ocr_provider_ready(provider.name, provider.config)
+            try:
+                ensure_ocr_provider_ready(provider.name, provider.config)
+            except Exception as exc:
+                provider._readiness_error = str(exc).strip() or exc.__class__.__name__
+                raise
             provider._readiness_verified = True
         result = provider.ocr_image(
             image_path,
