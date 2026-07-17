@@ -682,6 +682,13 @@ def _run_ocr_page(
             quality_flags=quality_flags + result.warnings,
         )
     except Exception as exc:
+        logger.error(
+            "Page %s: OCR with provider %s failed: %s",
+            page_number,
+            provider.name,
+            exc,
+            exc_info=not continue_on_ocr_error,
+        )
         if not continue_on_ocr_error:
             raise
         text = normalize_page_markdown(f"[OCR failed: {exc}]", page_number)
