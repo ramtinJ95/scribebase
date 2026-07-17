@@ -425,7 +425,9 @@ uv run scribebase worker
 
 Endpoints:
 
-- `GET /health`: readiness summary for ScribeBase, Weaviate, embeddings, GLM-OCR, and the worker.
+- `GET /health`: readiness summary for ScribeBase, Weaviate, embeddings,
+  GLM-OCR, and the worker. Top-level status is `degraded` when any required
+  service is unavailable.
 - `GET /sources`: list indexed source manifests.
 - `POST /ingest`: upload a document and enqueue extraction/indexing.
 - `POST /articles`: submit Markdown/text article content as JSON and enqueue ingestion.

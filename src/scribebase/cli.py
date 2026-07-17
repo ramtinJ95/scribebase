@@ -72,9 +72,11 @@ def init(data_dir: Path = typer.Option(Path(".scribebase"), help="Local data dir
 @app.command()
 def doctor() -> None:
     config = _config()
+    healthy = True
     typer.echo("ScribeBase doctor")
     for dep in ["typer", "pydantic", "yaml", "fitz", "pymupdf4llm", "httpx", "weaviate"]:
         ok = importlib.util.find_spec(dep) is not None
+        healthy = healthy and ok
         typer.echo(f"[{'OK' if ok else 'MISSING'}] dependency: {dep}")
 
     try:
@@ -82,9 +84,11 @@ def doctor() -> None:
 
         store = WeaviateStore(config.weaviate)
         ready = store.is_ready()
+        healthy = healthy and ready
         typer.echo(f"[{'OK' if ready else 'FAIL'}] Weaviate: {config.weaviate.url}")
         store.close()
     except Exception as exc:
+        healthy = False
         typer.echo(f"[FAIL] Weaviate: {exc}")
         typer.echo("Start it with: docker compose -f docker-compose.weaviate.yml up -d")
 
@@ -92,8 +96,10 @@ def doctor() -> None:
         from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
 
         ok, msg = LlamaCppEmbeddingClient(config.embedding).check_health()
+        healthy = healthy and ok
         typer.echo(f"[{'OK' if ok else 'FAIL'}] embeddings: {msg}")
     except Exception as exc:
+        healthy = False
         typer.echo(f"[FAIL] embeddings: {exc}")
         typer.echo(
             "Example: llama-server --model ./models/Qwen3-Embedding-4B-Q4_K_M.gguf "
@@ -102,11 +108,14 @@ def doctor() -> None:
 
     provider = config.ocr.providers.get(config.ocr.default_provider)
     ocr_ok, ocr_msg = check_ocr_provider_health(config.ocr.default_provider, provider)
+    healthy = healthy and ocr_ok
     typer.echo(
         f"[{'OK' if ocr_ok else 'FAIL'}] OCR provider: {config.ocr.default_provider}"
         + (f" ({provider.command})" if provider else "")
         + (f"; {ocr_msg}" if ocr_msg else "")
     )
+    if not healthy:
+        raise typer.Exit(code=1)
 
 
 @app.command()

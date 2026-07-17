@@ -45,7 +45,7 @@ def test_health_reports_readiness(tmp_path, monkeypatch) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "ok"
+    assert body["status"] == "degraded"
     assert body["data_dir"] == str(tmp_path)
     assert body["auth_required"] is True
     assert body["weaviate"] == {"ok": True, "message": "ready"}
@@ -62,6 +62,24 @@ def test_health_reports_running_worker(tmp_path, monkeypatch) -> None:
 
     assert response.json()["worker"]["ok"] is True
     assert "test-worker" in response.json()["worker"]["message"]
+    assert response.json()["status"] == "ok"
+
+
+def test_health_is_degraded_when_glm_ocr_is_unavailable(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "scribebase.server._ocr_health",
+        lambda _: ServiceHealth(ok=False, message="GLM-OCR unavailable; no fallback"),
+    )
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+    assert response.json()["ocr"] == {
+        "ok": False,
+        "message": "GLM-OCR unavailable; no fallback",
+    }
 
 
 def test_sources_requires_bearer_auth(tmp_path, monkeypatch) -> None:

@@ -181,7 +181,8 @@ uv run scribebase doctor
 `/v1/models` must include `GLM-OCR`; `/props` must report
 `"model_alias":"GLM-OCR"` and `"vision":true`. If any check fails,
 ScribeBase reports the GLM-OCR service as unavailable and refuses to fall back
-to Apple Vision.
+to Apple Vision. `scribebase doctor` exits nonzero, and the API health response
+uses top-level `"status":"degraded"` while any required service is unavailable.
 
 ## 6. Start the ScribeBase API and worker
 

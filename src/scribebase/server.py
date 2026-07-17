@@ -123,14 +123,20 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
 
     @app.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
+        services = {
+            "weaviate": _weaviate_health(config),
+            "embeddings": _embedding_health(config),
+            "ocr": _ocr_health(config),
+            "worker": _worker_health(config),
+        }
         return HealthResponse(
-            status="ok",
+            status="ok" if all(service.ok for service in services.values()) else "degraded",
             data_dir=str(config.data_dir),
             sources_count=len(list_manifests(config.data_dir)),
-            weaviate=_weaviate_health(config),
-            embeddings=_embedding_health(config),
-            ocr=_ocr_health(config),
-            worker=_worker_health(config),
+            weaviate=services["weaviate"],
+            embeddings=services["embeddings"],
+            ocr=services["ocr"],
+            worker=services["worker"],
             auth_required=bool(api_token),
         )
 
