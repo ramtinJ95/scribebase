@@ -17,6 +17,7 @@ from scribebase.markdown.frontmatter import read_markdown_with_frontmatter
 from scribebase.markdown.normalize import combine_pages, normalize_page_markdown
 from scribebase.models import PageMetadata, SourceManifest, SourceMetadataInput, TextQuality
 from scribebase.ocr.shell_provider import ShellOCRProvider
+from scribebase.ocr.health import ensure_ocr_provider_ready
 from scribebase.paths import chapter_file_name, source_dir, source_root_subdirs
 from scribebase.pdf_router import evaluate_text_quality
 from scribebase.source_registry import (
@@ -209,6 +210,9 @@ def _extract_manifest(
     else:
         raise ValueError(f"Unsupported input type: {original}")
 
+    if pages and all(page.extraction_method == "skipped" for page in pages):
+        raise RuntimeError("Extraction produced no content: every page was blank")
+
     page_markdowns = [
         Path(page.markdown_path).read_text() for page in pages if Path(page.markdown_path).exists()
     ]
@@ -222,12 +226,12 @@ def _extract_manifest(
     manifest.extraction_summary.pages_extracted_with_pymupdf4llm = sum(
         1 for page in pages if page.extraction_method == "pymupdf4llm"
     )
-    manifest.extraction_summary.pages_ocr = sum(
-        1 for page in pages if page.extraction_method == "ocr"
-    )
-    manifest.extraction_summary.ocr_provider = config.ocr.default_provider
-    provider_cfg = config.ocr.providers.get(config.ocr.default_provider)
-    manifest.extraction_summary.ocr_model = provider_cfg.model_name if provider_cfg else None
+    ocr_pages = [page for page in pages if page.extraction_method == "ocr"]
+    manifest.extraction_summary.pages_ocr = len(ocr_pages)
+    providers = {page.ocr_provider for page in ocr_pages if page.ocr_provider}
+    models = {page.ocr_model for page in ocr_pages if page.ocr_model}
+    manifest.extraction_summary.ocr_provider = _one_or_mixed(providers)
+    manifest.extraction_summary.ocr_model = _one_or_mixed(models)
     manifest.updated_at = datetime.now(timezone.utc)
     write_manifest(manifest)
     if not document_path.read_text().strip():
@@ -404,24 +408,37 @@ def _extract_pdf(
                     raise RuntimeError(
                         f"Page {page_number} has insufficient text and OCR is disabled"
                     )
-                provider = provider or _ocr_provider(ocr, config)
-                render_dpi = provider.config.render_dpi or config.ocr.render_dpi
+                selected_provider = provider or _ocr_provider(ocr, config)
+                render_dpi = selected_provider.config.render_dpi or config.ocr.render_dpi
                 logger.info(
                     "Page %s: insufficient text, rendering at %s DPI", page_number, render_dpi
                 )
                 pdf.render_page(page_index, image_path, render_dpi)
-                meta = _run_ocr_page(
-                    image_path,
-                    md_path,
-                    manifest,
-                    page_number,
-                    page_index,
-                    "pdf_page",
-                    provider,
-                    logger,
-                    continue_on_ocr_error,
-                    route.quality.flags,
-                )
+                if pdf.page_is_visually_blank(page_index):
+                    logger.info("Page %s: rendered page is blank; skipping OCR", page_number)
+                    meta = _blank_pdf_page_metadata(
+                        image_path,
+                        md_path,
+                        manifest,
+                        page_number,
+                        page_index,
+                        route.quality.flags,
+                    )
+                else:
+                    if provider is None:
+                        provider = selected_provider
+                    meta = _run_ocr_page(
+                        image_path,
+                        md_path,
+                        manifest,
+                        page_number,
+                        page_index,
+                        "pdf_page",
+                        provider,
+                        logger,
+                        continue_on_ocr_error,
+                        route.quality.flags,
+                    )
             _write_page_metadata(paths["metadata"], meta)
             pages.append(meta)
     return pages
@@ -511,6 +528,31 @@ def _extract_text_pdf_page(
         char_count=len(text.strip()),
         word_count=len(text.split()),
         quality_flags=route.quality.flags + ([fallback_warning] if fallback_warning else []),
+    )
+
+
+def _blank_pdf_page_metadata(
+    image_path: Path,
+    md_path: Path,
+    manifest: SourceManifest,
+    page_number: int,
+    page_index: int,
+    quality_flags: list[str],
+) -> PageMetadata:
+    text = normalize_page_markdown("", page_number)
+    md_path.write_text(text)
+    return PageMetadata(
+        source_id=manifest.source_id,
+        page_number=page_number,
+        page_index=page_index,
+        input_type="pdf_page",
+        text_layer_detected=False,
+        extraction_method="skipped",
+        image_path=str(image_path),
+        markdown_path=str(md_path),
+        char_count=0,
+        word_count=0,
+        quality_flags=quality_flags + ["blank_page"],
     )
 
 
@@ -612,11 +654,26 @@ def _run_ocr_page(
 ) -> PageMetadata:
     logger.info("Page %s: OCR with %s provider", page_number, provider.name)
     try:
+        readiness_error = getattr(provider, "_readiness_error", None)
+        if readiness_error:
+            raise RuntimeError(readiness_error)
+        if not getattr(provider, "_readiness_verified", False):
+            try:
+                ensure_ocr_provider_ready(provider.name, provider.config)
+            except Exception as exc:
+                provider._readiness_error = str(exc).strip() or exc.__class__.__name__
+                raise
+            provider._readiness_verified = True
         result = provider.ocr_image(
             image_path,
             md_path,
             {"page_number": page_number, "source_id": manifest.source_id},
         )
+        if not result.text.strip():
+            raise RuntimeError(
+                f"OCR provider {provider.name!r} returned empty output for nonblank "
+                f"page {page_number}: {image_path}"
+            )
         text = normalize_page_markdown(result.text, page_number)
         md_path.write_text(text)
         return PageMetadata(
@@ -635,6 +692,13 @@ def _run_ocr_page(
             quality_flags=quality_flags + result.warnings,
         )
     except Exception as exc:
+        logger.error(
+            "Page %s: OCR with provider %s failed: %s",
+            page_number,
+            provider.name,
+            exc,
+            exc_info=not continue_on_ocr_error,
+        )
         if not continue_on_ocr_error:
             raise
         text = normalize_page_markdown(f"[OCR failed: {exc}]", page_number)
@@ -669,6 +733,12 @@ def _image_files(path: Path) -> list[Path]:
     if not files:
         raise FileNotFoundError(f"No supported image files found in {path}")
     return files
+
+
+def _one_or_mixed(values: set[str]) -> str | None:
+    if len(values) == 1:
+        return next(iter(values))
+    return "mixed" if values else None
 
 
 def _write_page_metadata(metadata_dir: Path, metadata: PageMetadata) -> None:

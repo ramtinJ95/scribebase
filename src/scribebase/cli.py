@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import shlex
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +18,7 @@ from scribebase.extraction import extract_source
 from scribebase.indexing import index_source, load_chunks, rebuild_index
 from scribebase.logging_utils import setup_logging
 from scribebase.models import SearchFilters
+from scribebase.ocr.health import check_ocr_provider_health
 from scribebase.paths import ensure_data_layout
 from scribebase.retrieval.search import format_search_results, search_chunks
 from scribebase.source_registry import backfill_source_identities, find_source, list_manifests
@@ -72,9 +72,11 @@ def init(data_dir: Path = typer.Option(Path(".scribebase"), help="Local data dir
 @app.command()
 def doctor() -> None:
     config = _config()
+    healthy = True
     typer.echo("ScribeBase doctor")
     for dep in ["typer", "pydantic", "yaml", "fitz", "pymupdf4llm", "httpx", "weaviate"]:
         ok = importlib.util.find_spec(dep) is not None
+        healthy = healthy and ok
         typer.echo(f"[{'OK' if ok else 'MISSING'}] dependency: {dep}")
 
     try:
@@ -82,9 +84,11 @@ def doctor() -> None:
 
         store = WeaviateStore(config.weaviate)
         ready = store.is_ready()
+        healthy = healthy and ready
         typer.echo(f"[{'OK' if ready else 'FAIL'}] Weaviate: {config.weaviate.url}")
         store.close()
     except Exception as exc:
+        healthy = False
         typer.echo(f"[FAIL] Weaviate: {exc}")
         typer.echo("Start it with: docker compose -f docker-compose.weaviate.yml up -d")
 
@@ -92,8 +96,10 @@ def doctor() -> None:
         from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
 
         ok, msg = LlamaCppEmbeddingClient(config.embedding).check_health()
+        healthy = healthy and ok
         typer.echo(f"[{'OK' if ok else 'FAIL'}] embeddings: {msg}")
     except Exception as exc:
+        healthy = False
         typer.echo(f"[FAIL] embeddings: {exc}")
         typer.echo(
             "Example: llama-server --model ./models/Qwen3-Embedding-4B-Q4_K_M.gguf "
@@ -101,12 +107,15 @@ def doctor() -> None:
         )
 
     provider = config.ocr.providers.get(config.ocr.default_provider)
-    ocr_ok, ocr_msg = _ocr_doctor_message(provider.command if provider else None)
+    ocr_ok, ocr_msg = check_ocr_provider_health(config.ocr.default_provider, provider)
+    healthy = healthy and ocr_ok
     typer.echo(
-        f"[{'OK' if ocr_ok else 'WARN'}] OCR provider: {config.ocr.default_provider}"
+        f"[{'OK' if ocr_ok else 'FAIL'}] OCR provider: {config.ocr.default_provider}"
         + (f" ({provider.command})" if provider else "")
         + (f"; {ocr_msg}" if ocr_msg else "")
     )
+    if not healthy:
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -391,26 +400,6 @@ def chunks_show(chunk_id: str) -> None:
             typer.echo(chunk.model_dump_json(indent=2))
             return
     raise typer.Exit(code=1)
-
-
-def _ocr_doctor_message(command: str | None) -> tuple[bool, str]:
-    if not command:
-        return False, "no command configured"
-    try:
-        parts = shlex.split(
-            command.format(
-                input_image="x", output_md="y", output_json="z", page_number=1, source_id="s"
-            )
-        )
-    except Exception as exc:
-        return False, f"invalid command template: {exc}"
-    for part in parts[1:]:
-        if part.endswith(".py") or part.startswith("./"):
-            path = Path(part)
-            if not path.exists():
-                return False, f"missing adapter path: {part}"
-            break
-    return True, "configured"
 
 
 if __name__ == "__main__":

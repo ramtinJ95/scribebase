@@ -12,6 +12,9 @@ class ShellOCRProvider:
     def __init__(self, config: OCRProviderConfig, name: str = "shell"):
         self.config = config
         self.name = name
+        self._readiness_verified = False
+        self._readiness_error: str | None = None
+        self._readiness_verified = False
 
     def format_command(self, image_path: Path, output_md_path: Path, metadata: dict) -> list[str]:
         output_json = output_md_path.with_suffix(".json")
@@ -21,6 +24,8 @@ class ShellOCRProvider:
             "output_json": str(output_json),
             "page_number": str(metadata.get("page_number", "")),
             "source_id": str(metadata.get("source_id", "")),
+            "base_url": self.config.base_url or "",
+            "model_name": self.config.model_name or "",
         }
         command = self.config.command.format(**values)
         return shlex.split(command)

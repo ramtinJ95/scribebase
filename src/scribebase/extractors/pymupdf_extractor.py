@@ -3,6 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 
+BLANK_PAGE_DARK_THRESHOLD = 245
+BLANK_PAGE_MAX_INK_RATIO = 0.0001
+
+
 class PDFDocument:
     def __init__(self, pdf_path: Path):
         import fitz
@@ -42,6 +46,22 @@ class PDFDocument:
             return False
         dark_pixels = sum(value < 245 for value in samples)
         return dark_pixels / len(samples) >= 0.002
+
+    def page_is_visually_blank(self, page_index: int) -> bool:
+        """Use a low-resolution raster check to distinguish blank pages from OCR failures."""
+        import fitz
+
+        pixmap = self.document[page_index].get_pixmap(
+            matrix=fitz.Matrix(0.5, 0.5),
+            colorspace=fitz.csGRAY,
+            alpha=False,
+        )
+        samples = pixmap.samples
+        if not samples:
+            return True
+        dark_pixels = sum(value < BLANK_PAGE_DARK_THRESHOLD for value in samples)
+        allowed_dark_pixels = max(8, int(len(samples) * BLANK_PAGE_MAX_INK_RATIO))
+        return dark_pixels <= allowed_dark_pixels
 
     def extract_page_markdown(
         self,

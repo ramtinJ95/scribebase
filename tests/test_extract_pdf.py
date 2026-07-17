@@ -6,8 +6,17 @@ import fitz
 import pytest
 
 from scribebase.config import AppConfig, PDFDetectionConfig
-from scribebase.extraction import extract_source, read_page_metadata
+from scribebase.extraction import _ocr_provider, extract_source, read_page_metadata
 from scribebase.models import OCRResult
+
+
+def test_auto_selects_glm_ocr_without_apple_vision_fallback() -> None:
+    config = AppConfig()
+
+    provider = _ocr_provider("auto", config)
+
+    assert provider.name == "glm_ocr"
+    assert provider.config.model_name == "GLM-OCR"
 
 
 def test_extract_true_text_pdf_without_ocr(tmp_path) -> None:
@@ -78,7 +87,7 @@ def test_auto_true_text_pdf_does_not_ocr_blank_pages(tmp_path, monkeypatch) -> N
 def test_auto_scanned_pdf_ocr_image_backed_pages(tmp_path, monkeypatch) -> None:
     image = tmp_path / "scan.png"
     pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
-    pix.clear_with(255)
+    pix.clear_with(0)
     pix.save(image)
 
     pdf = tmp_path / "scan.pdf"
@@ -101,6 +110,7 @@ def test_auto_scanned_pdf_ocr_image_backed_pages(tmp_path, monkeypatch) -> None:
             )
 
     monkeypatch.setattr("scribebase.extraction._ocr_provider", lambda *_: FakeOCRProvider())
+    monkeypatch.setattr("scribebase.extraction.ensure_ocr_provider_ready", lambda *_: None)
     config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     manifest = extract_source(
@@ -117,12 +127,266 @@ def test_auto_scanned_pdf_ocr_image_backed_pages(tmp_path, monkeypatch) -> None:
 
     assert manifest.extraction_summary.pages_total == 1
     assert manifest.extraction_summary.pages_ocr == 1
+    assert manifest.extraction_summary.ocr_provider == "fake"
+    assert manifest.extraction_summary.ocr_model == "fake-ocr"
+
+
+def test_auto_skips_visually_blank_image_backed_pdf_page(tmp_path, monkeypatch) -> None:
+    image = tmp_path / "blank-scan.png"
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
+    pix.clear_with(255)
+    pix.save(image)
+    pdf = tmp_path / "blank-scan.pdf"
+    doc = fitz.open()
+    for _ in range(3):
+        text_page = doc.new_page()
+        text_page.insert_text((72, 72), "This is a true text page. " * 40)
+    page = doc.new_page()
+    page.insert_image(fitz.Rect(72, 72, 200, 200), filename=image)
+    doc.save(pdf)
+    doc.close()
+
+    def fail_readiness(*_args):  # noqa: ANN202
+        raise AssertionError("blank pages must not require the OCR service")
+
+    monkeypatch.setattr("scribebase.extraction.ensure_ocr_provider_ready", fail_readiness)
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
+
+    manifest = extract_source(
+        pdf,
+        title="Blank Scan",
+        source_type="book",
+        course=None,
+        chapter=None,
+        language="en",
+        ocr="auto",
+        config=config,
+        logger=logging.getLogger("test"),
+    )
+
+    pages = read_page_metadata(Path(manifest.data_dir))
+    assert pages[3].extraction_method == "skipped"
+    assert pages[3].quality_flags[-1] == "blank_page"
+    assert manifest.extraction_summary.pages_ocr == 0
+    assert manifest.extraction_summary.ocr_provider is None
+
+
+def test_all_blank_pdf_fails_instead_of_publishing_page_markers(tmp_path) -> None:
+    image = tmp_path / "blank-scan.png"
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
+    pix.clear_with(255)
+    pix.save(image)
+    pdf = tmp_path / "blank-scan.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_image(fitz.Rect(72, 72, 200, 200), filename=image)
+    doc.save(pdf)
+    doc.close()
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
+
+    with pytest.raises(RuntimeError, match="every page was blank"):
+        extract_source(
+            pdf,
+            title="Blank Scan",
+            source_type="book",
+            course=None,
+            chapter=None,
+            language="en",
+            ocr="auto",
+            config=config,
+            logger=logging.getLogger("test"),
+        )
+
+    assert not list((config.data_dir / "sources").glob("*/metadata/manifest.json"))
+
+
+def test_nonblank_page_with_empty_ocr_output_fails(tmp_path, monkeypatch) -> None:
+    image = tmp_path / "scan.png"
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
+    pix.clear_with(0)
+    pix.save(image)
+    pdf = tmp_path / "scan.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_image(fitz.Rect(72, 72, 200, 200), filename=image)
+    doc.save(pdf)
+    doc.close()
+
+    class EmptyOCRProvider:
+        name = "glm_ocr"
+        config = SimpleNamespace(render_dpi=72)
+
+        def ocr_image(self, image_path, output_md_path, metadata):  # noqa: ANN001
+            return OCRResult(
+                markdown_path=output_md_path,
+                text="",
+                provider=self.name,
+                model="GLM-OCR",
+            )
+
+    monkeypatch.setattr("scribebase.extraction._ocr_provider", lambda *_: EmptyOCRProvider())
+    monkeypatch.setattr("scribebase.extraction.ensure_ocr_provider_ready", lambda *_: None)
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
+
+    with pytest.raises(RuntimeError, match="empty output for nonblank page 1"):
+        extract_source(
+            pdf,
+            title="Empty OCR",
+            source_type="book",
+            course=None,
+            chapter=None,
+            language="en",
+            ocr="auto",
+            config=config,
+            logger=logging.getLogger("test"),
+        )
+
+
+def test_auto_fails_actionably_when_glm_ocr_is_unavailable(tmp_path, monkeypatch) -> None:
+    image = tmp_path / "scan.png"
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
+    pix.clear_with(0)
+    pix.save(image)
+    pdf = tmp_path / "scan.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_image(fitz.Rect(72, 72, 200, 200), filename=image)
+    doc.save(pdf)
+    doc.close()
+
+    def unavailable(provider_name, _provider):  # noqa: ANN001, ANN202
+        raise RuntimeError(
+            f"OCR provider {provider_name!r} is unavailable at http://localhost:8082/v1. "
+            "No OCR fallback will be used. Start the dedicated GLM-OCR service with --mmproj."
+        )
+
+    monkeypatch.setattr("scribebase.extraction.ensure_ocr_provider_ready", unavailable)
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
+
+    with pytest.raises(RuntimeError, match="No OCR fallback will be used.*--mmproj"):
+        extract_source(
+            pdf,
+            title="Unavailable OCR",
+            source_type="book",
+            course=None,
+            chapter=None,
+            language="en",
+            ocr="auto",
+            config=config,
+            logger=logging.getLogger("test"),
+        )
+
+
+def test_continue_on_ocr_error_records_unavailable_provider_failure(
+    tmp_path, monkeypatch
+) -> None:
+    image = tmp_path / "scan.png"
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
+    pix.clear_with(0)
+    pix.save(image)
+    pdf = tmp_path / "scan.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_image(fitz.Rect(72, 72, 200, 200), filename=image)
+    doc.save(pdf)
+    doc.close()
+
+    def unavailable(provider_name, _provider):  # noqa: ANN001, ANN202
+        raise RuntimeError(
+            f"OCR provider {provider_name!r} is unavailable. No OCR fallback will be used."
+        )
+
+    monkeypatch.setattr("scribebase.extraction.ensure_ocr_provider_ready", unavailable)
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
+
+    manifest = extract_source(
+        pdf,
+        title="Unavailable OCR Continued",
+        source_type="book",
+        course=None,
+        chapter=None,
+        language="en",
+        ocr="auto",
+        config=config,
+        logger=logging.getLogger("test"),
+        continue_on_ocr_error=True,
+    )
+
+    pages = read_page_metadata(Path(manifest.data_dir))
+    assert pages[0].extraction_method == "failed"
+    assert "ocr_failed" in pages[0].quality_flags
+    assert "No OCR fallback will be used" in Path(pages[0].markdown_path).read_text()
+
+
+def test_image_continue_on_ocr_error_handles_unavailable_provider(tmp_path, monkeypatch) -> None:
+    image = tmp_path / "scan.png"
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
+    pix.clear_with(0)
+    pix.save(image)
+
+    monkeypatch.setattr(
+        "scribebase.extraction.ensure_ocr_provider_ready",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("GLM-OCR unavailable")),
+    )
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
+
+    manifest = extract_source(
+        image,
+        title="Unavailable Image OCR",
+        source_type="notes",
+        course=None,
+        chapter=None,
+        language="en",
+        ocr="auto",
+        config=config,
+        logger=logging.getLogger("test"),
+        continue_on_ocr_error=True,
+    )
+
+    pages = read_page_metadata(Path(manifest.data_dir))
+    assert pages[0].extraction_method == "failed"
+    assert "GLM-OCR unavailable" in Path(pages[0].markdown_path).read_text()
+
+
+def test_continuation_caches_unavailable_provider_readiness(tmp_path, monkeypatch) -> None:
+    images = tmp_path / "scans"
+    images.mkdir()
+    for page_number in (1, 2):
+        pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
+        pix.clear_with(0)
+        pix.save(images / f"page-{page_number}.png")
+    health_checks = 0
+
+    def unavailable(*_args):  # noqa: ANN202
+        nonlocal health_checks
+        health_checks += 1
+        raise RuntimeError("GLM-OCR unavailable")
+
+    monkeypatch.setattr("scribebase.extraction.ensure_ocr_provider_ready", unavailable)
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
+
+    manifest = extract_source(
+        images,
+        title="Unavailable Image OCR",
+        source_type="notes",
+        course=None,
+        chapter=None,
+        language="en",
+        ocr="auto",
+        config=config,
+        logger=logging.getLogger("test"),
+        continue_on_ocr_error=True,
+    )
+
+    pages = read_page_metadata(Path(manifest.data_dir))
+    assert health_checks == 1
+    assert [page.extraction_method for page in pages] == ["failed", "failed"]
 
 
 def test_auto_mixed_pdf_ocr_scanned_pages(tmp_path, monkeypatch) -> None:
     image = tmp_path / "scan.png"
     pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
-    pix.clear_with(255)
+    pix.clear_with(0)
     pix.save(image)
 
     pdf = tmp_path / "mixed.pdf"
@@ -148,6 +412,7 @@ def test_auto_mixed_pdf_ocr_scanned_pages(tmp_path, monkeypatch) -> None:
             )
 
     monkeypatch.setattr("scribebase.extraction._ocr_provider", lambda *_: FakeOCRProvider())
+    monkeypatch.setattr("scribebase.extraction.ensure_ocr_provider_ready", lambda *_: None)
     config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     manifest = extract_source(
@@ -255,6 +520,7 @@ def test_auto_ocrs_vector_backed_page_without_embedded_images(tmp_path, monkeypa
             )
 
     monkeypatch.setattr("scribebase.extraction._ocr_provider", lambda *_: FakeOCRProvider())
+    monkeypatch.setattr("scribebase.extraction.ensure_ocr_provider_ready", lambda *_: None)
     config = AppConfig(data_dir=tmp_path / "data")
 
     manifest = extract_source(

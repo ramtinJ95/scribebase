@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.scribebase.ocr</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/yourname/scribebase</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/absolute/path/to/llama-server</string>
+    <string>--model</string>
+    <string>/Users/yourname/scribebase/models/ocr/GLM-OCR-Q8_0.gguf</string>
+    <string>--mmproj</string>
+    <string>/Users/yourname/scribebase/models/ocr/mmproj-GLM-OCR-Q8_0.gguf</string>
+    <string>--alias</string>
+    <string>GLM-OCR</string>
+    <string>--ctx-size</string>
+    <string>8192</string>
+    <string>--parallel</string>
+    <string>1</string>
+    <string>--cache-ram</string>
+    <string>0</string>
+    <string>-ngl</string>
+    <string>0</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>8082</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/yourname/scribebase-data/logs/ocr.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/yourname/scribebase-data/logs/ocr.err.log</string>
+</dict>
+</plist>

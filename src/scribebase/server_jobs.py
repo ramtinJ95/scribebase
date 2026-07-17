@@ -284,6 +284,17 @@ def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
         if job.status != "running" or job.claim_token != claim_token:
             raise RuntimeError(f"Job claim is not owned by this worker: {job_id}")
     logger = setup_logging(config.data_dir)
+    ocr_provider = (
+        config.ocr.default_provider if job.ocr in {"auto", "always"} else job.ocr
+    )
+    logger.info(
+        "Job %s starting phase=%s title=%r OCR request=%s provider=%s",
+        job.job_id,
+        job.phase,
+        job.title,
+        job.ocr,
+        ocr_provider,
+    )
 
     try:
         if job.phase in {"queued", "extracting"}:
@@ -341,6 +352,7 @@ def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
             index_source(manifest.source_id, config, logger, operation_id=job.job_id)
             job.phase = "completed"
         job.status = "succeeded"
+        logger.info("Job %s succeeded", job.job_id)
     except Exception as exc:
         if isinstance(exc, DependencyUnavailableError):
             job.status = "queued"
@@ -348,9 +360,18 @@ def run_ingest_job(job_id: str, claim_token: str, config: AppConfig) -> None:
             job.next_attempt_at = _now() + timedelta(
                 seconds=config.server.worker_dependency_retry_seconds
             )
+            logger.warning("Job %s dependency unavailable; retry scheduled: %s", job.job_id, exc)
         else:
             job.status = "failed"
             job.error = str(exc).strip() or exc.__class__.__name__
+            logger.exception(
+                "Job %s failed phase=%s OCR request=%s provider=%s: %s",
+                job.job_id,
+                job.phase,
+                job.ocr,
+                ocr_provider,
+                job.error,
+            )
     finally:
         now = _now()
         job.finished_at = now if job.status in {"succeeded", "failed"} else None

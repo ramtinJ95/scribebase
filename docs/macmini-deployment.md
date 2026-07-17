@@ -11,8 +11,8 @@ Other agent sessions
   -> durable ingestion queue and worker
   -> ScribeBase local data dir
   -> local Weaviate
-  -> local llama.cpp embeddings
-  -> optional local OCR runtime
+  -> local llama.cpp embeddings on port 8080
+  -> local multimodal GLM-OCR on port 8082
 ```
 
 Canonical files stay on the Mac mini under `SCRIBEBASE_DATA_DIR`. Weaviate is a
@@ -27,9 +27,9 @@ Install these on the Mac mini:
 - Docker Desktop or another Docker runtime
 - `llama-server` from llama.cpp
 - the embedding model GGUF file
-- optional OCR runtime:
-  - Apple Vision needs no daemon
-  - GLM-OCR or another vision model needs its own local server/adapter
+- both files from `ggml-org/GLM-OCR-GGUF`:
+  - `GLM-OCR-Q8_0.gguf`
+  - `mmproj-GLM-OCR-Q8_0.gguf`
 
 The examples below assume:
 
@@ -122,36 +122,72 @@ cd "$REPO"
 uv run scribebase rebuild-index --all
 ```
 
-## 5. Configure OCR
+## 5. Install and start GLM-OCR
 
-For true-text PDFs, no OCR server is needed.
+`ocr=auto` uses the `glm_ocr` provider. Apple Vision remains available only
+when explicitly requested with `--ocr apple_vision`; it is not a fallback.
+True-text pages remain on the existing PyMuPDF extraction path.
 
-Fast macOS OCR:
+Download the exact model and multimodal projector expected by the default
+configuration. Model files are intentionally not stored in Git:
 
 ```bash
-uv run scribebase ingest ./scan.pdf \
-  --title "Scan" \
-  --source-type book \
-  --ocr apple_vision
+mkdir -p "$REPO/models/ocr"
+curl -fL \
+  -o "$REPO/models/ocr/GLM-OCR-Q8_0.gguf" \
+  https://huggingface.co/ggml-org/GLM-OCR-GGUF/resolve/main/GLM-OCR-Q8_0.gguf
+curl -fL \
+  -o "$REPO/models/ocr/mmproj-GLM-OCR-Q8_0.gguf" \
+  https://huggingface.co/ggml-org/GLM-OCR-GGUF/resolve/main/mmproj-GLM-OCR-Q8_0.gguf
 ```
 
-GLM-OCR style local vision server:
+Start a dedicated multimodal server. `--alias GLM-OCR` is load-bearing: it
+matches the model name in ScribeBase config and is checked by health probes.
+`--mmproj` is also load-bearing because the base model alone cannot accept
+images.
 
 ```bash
 llama-server \
-  -m "$REPO/models/ocr/GLM-OCR-Q8_0.gguf" \
+  --model "$REPO/models/ocr/GLM-OCR-Q8_0.gguf" \
   --mmproj "$REPO/models/ocr/mmproj-GLM-OCR-Q8_0.gguf" \
+  --alias GLM-OCR \
+  --ctx-size 8192 \
+  --parallel 1 \
+  --cache-ram 0 \
   -ngl 0 \
+  --host 127.0.0.1 \
   --port 8082
 ```
 
-The default `shell` OCR provider calls:
+This process is independent from the embedding-only server on port 8080. Do
+not stop, reconfigure, or reuse the embedding process for OCR.
+
+The default `glm_ocr` provider calls:
 
 ```bash
-./scripts/run_local_ocr.py --input {input_image} --output {output_md}
+./scripts/run_local_ocr.py --input {input_image} --output {output_md} \
+  --base-url http://localhost:8082/v1 --model GLM-OCR
 ```
 
-That adapter defaults to `http://localhost:8082/v1`.
+Verify the server, configured alias, and vision projector:
+
+```bash
+curl -fsS http://127.0.0.1:8082/health
+curl -fsS http://127.0.0.1:8082/v1/models
+curl -fsS http://127.0.0.1:8082/props
+uv run scribebase doctor
+```
+
+`/v1/models` must include `GLM-OCR`; `/props` must report
+`"model_alias":"GLM-OCR"` and `"vision":true`. If any check fails,
+ScribeBase reports the GLM-OCR service as unavailable and refuses to fall back
+to Apple Vision. `scribebase doctor` exits nonzero, and the API health response
+uses top-level `"status":"degraded"` while any required service is unavailable.
+
+Older generated configs whose default was `shell` or `apple_vision` are
+migrated to the configured `glm_ocr` provider when loaded. Update the YAML on
+the deployed machine as shown in the README as well, so the file reflects its
+effective runtime configuration.
 
 ## 6. Start the ScribeBase API and worker
 
@@ -192,11 +228,12 @@ Template plists live in `docs/launchd/`:
 - `com.scribebase.server.plist.example`
 - `com.scribebase.worker.plist.example`
 - `com.scribebase.embedding.plist.example`
+- `com.scribebase.ocr.plist.example`
 
 Copy each template to `~/Library/LaunchAgents/`, remove `.example`, and edit:
 
 - executable paths for `uv` and `llama-server`
-- repository path (use the same path in all three templates)
+- repository path (use the same path in all four templates)
 - data path
 - token
 - model path
@@ -222,6 +259,7 @@ Then load them:
 
 ```bash
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.embedding.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.ocr.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.server.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.worker.plist
 ```
@@ -233,6 +271,8 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.server.plis
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.server.plist
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.worker.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.worker.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.ocr.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.scribebase.ocr.plist
 ```
 
 Inspect logs:
@@ -241,6 +281,7 @@ Inspect logs:
 tail -f /Users/yourname/scribebase-data/logs/scribebase-server.out.log
 tail -f /Users/yourname/scribebase-data/logs/scribebase-server.err.log
 tail -f /Users/yourname/scribebase-data/logs/scribebase-worker.err.log
+tail -f /Users/yourname/scribebase-data/logs/ocr.err.log
 ```
 
 ## 8. Remote smoke tests
@@ -315,6 +356,8 @@ Run this after reboot or before debugging a remote client:
 cd "$REPO"
 docker compose -f docker-compose.weaviate.yml ps
 curl -s http://127.0.0.1:8080/v1/models
+curl -s http://127.0.0.1:8082/v1/models
+curl -s http://127.0.0.1:8082/props
 uv run scribebase doctor
 curl -s http://127.0.0.1:8765/health
 ```
@@ -384,6 +427,21 @@ tail -n 200 "$DATA/logs/app.log"
 
 Common causes are missing OCR runtime, unsupported file type, Weaviate down, or
 embedding server down.
+
+### GLM-OCR is unavailable
+
+Check the independent OCR service and its logs:
+
+```bash
+curl -fsS http://127.0.0.1:8082/health
+curl -fsS http://127.0.0.1:8082/v1/models
+curl -fsS http://127.0.0.1:8082/props
+tail -n 200 "$DATA/logs/ocr.err.log"
+```
+
+The embedding server on port 8080 cannot satisfy OCR requests. Confirm the OCR
+launchd service uses both the GLM-OCR model and mmproj files, includes
+`--alias GLM-OCR`, and binds port 8082.
 
 ### Mac mini is unreachable from another machine
 

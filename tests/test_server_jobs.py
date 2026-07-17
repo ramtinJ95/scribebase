@@ -170,6 +170,11 @@ def test_run_ingest_job_marks_failure(tmp_path, monkeypatch) -> None:
     saved = read_job(tmp_path, job.job_id)
     assert saved.status == "failed"
     assert saved.error == "boom"
+    log = (tmp_path / "logs" / "app.log").read_text()
+    assert f"Job {job.job_id} starting phase=queued" in log
+    assert "OCR request=auto provider=glm_ocr" in log
+    assert f"Job {job.job_id} failed phase=extracting" in log
+    assert "boom" in log
 
 
 def test_successful_job_cleanup_failure_does_not_escape(tmp_path, monkeypatch) -> None:  # noqa: ANN001
@@ -191,8 +196,14 @@ def test_successful_job_cleanup_failure_does_not_escape(tmp_path, monkeypatch) -
     warnings = []
 
     class Logger:
+        def info(self, *args) -> None:  # noqa: ANN002
+            pass
+
         def warning(self, *args) -> None:  # noqa: ANN002
             warnings.append(args)
+
+        def exception(self, *args) -> None:  # noqa: ANN002
+            pass
 
     def fake_extract(*_args, **metadata):  # noqa: ANN002, ANN202
         now = datetime.now(timezone.utc)
@@ -239,8 +250,14 @@ def test_failed_job_identity_cleanup_failure_does_not_escape(tmp_path, monkeypat
     warnings = []
 
     class Logger:
+        def info(self, *args) -> None:  # noqa: ANN002
+            pass
+
         def warning(self, *args) -> None:  # noqa: ANN002
             warnings.append(args)
+
+        def exception(self, *args) -> None:  # noqa: ANN002
+            pass
 
     monkeypatch.setattr("scribebase.server_jobs.setup_logging", lambda _data_dir: Logger())
     monkeypatch.setattr(
