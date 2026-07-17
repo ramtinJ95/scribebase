@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-import httpx
+import json
 
-from scribebase.config import default_config
+import httpx
+import pytest
+
+from scribebase.config import OCRProviderConfig, default_config
 from scribebase.ocr.health import check_ocr_provider_health
 
 
@@ -77,3 +80,53 @@ def test_glm_ocr_health_rejects_server_without_vision(monkeypatch) -> None:
 
     assert ok is False
     assert "does not advertise vision/multimodal capability" in message
+
+
+@pytest.mark.parametrize(
+    ("models_payload", "props_payload", "expected"),
+    [
+        (None, {"model_alias": "GLM-OCR", "modalities": {"vision": True}}, "JSON object"),
+        ({"data": None}, {"model_alias": "GLM-OCR", "modalities": {}}, "array of objects"),
+        ({"data": [None]}, {"model_alias": "GLM-OCR", "modalities": {}}, "array of objects"),
+        ({"data": [{"id": "GLM-OCR"}]}, [], "/props response"),
+    ],
+)
+def test_glm_ocr_health_reports_malformed_json(
+    monkeypatch,
+    models_payload,
+    props_payload,
+    expected,
+) -> None:  # noqa: ANN001
+    responses = {
+        "http://localhost:8082/health": {"status": "ok"},
+        "http://localhost:8082/v1/models": models_payload,
+        "http://localhost:8082/props": props_payload,
+    }
+
+    def fake_get(url, **_kwargs):  # noqa: ANN001, ANN202
+        return httpx.Response(
+            200,
+            content=json.dumps(responses[url]).encode(),
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    config = default_config()
+
+    ok, message = check_ocr_provider_health(
+        config.ocr.default_provider,
+        config.ocr.providers[config.ocr.default_provider],
+    )
+
+    assert ok is False
+    assert expected in message
+    assert "No OCR fallback will be used" in message
+
+
+def test_ocr_health_rejects_missing_command_executable(tmp_path) -> None:
+    provider = OCRProviderConfig(command=str(tmp_path / "missing-adapter"))
+
+    ok, message = check_ocr_provider_health("custom", provider)
+
+    assert ok is False
+    assert "Missing OCR executable" in message

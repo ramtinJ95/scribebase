@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import shlex
+import shutil
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -39,29 +41,25 @@ def check_ocr_provider_health(
         props.raise_for_status()
         models_payload = models.json()
         props_payload = props.json()
-    except (httpx.HTTPError, ValueError) as exc:
+        model_ids = _model_ids(models_payload)
+        model_alias = _model_alias(props_payload)
+        has_vision = _has_vision(models_payload, props_payload)
+        if provider.model_name and provider.model_name not in model_ids:
+            raise ValueError(
+                f"configured model {provider.model_name!r} is not loaded; "
+                f"server models={model_ids}"
+            )
+        if provider.model_name and model_alias != provider.model_name:
+            raise ValueError(
+                f"server model alias is {model_alias!r}, expected {provider.model_name!r}"
+            )
+        if provider.require_multimodal and not has_vision:
+            raise ValueError(
+                "server does not advertise vision/multimodal capability; "
+                "load the required mmproj"
+            )
+    except (httpx.HTTPError, TypeError, ValueError) as exc:
         return False, _unavailable_message(provider_name, provider, str(exc))
-
-    model_ids = _model_ids(models_payload)
-    if provider.model_name and provider.model_name not in model_ids:
-        return False, _unavailable_message(
-            provider_name,
-            provider,
-            f"configured model {provider.model_name!r} is not loaded; server models={model_ids}",
-        )
-    if provider.model_name and props_payload.get("model_alias") != provider.model_name:
-        return False, _unavailable_message(
-            provider_name,
-            provider,
-            f"server model alias is {props_payload.get('model_alias')!r}, "
-            f"expected {provider.model_name!r}",
-        )
-    if provider.require_multimodal and not _has_vision(models_payload, props_payload):
-        return False, _unavailable_message(
-            provider_name,
-            provider,
-            "server does not advertise vision/multimodal capability; load the required mmproj",
-        )
     return (
         True,
         f"provider={provider_name}; model={provider.model_name}; "
@@ -90,6 +88,15 @@ def _check_command(provider: OCRProviderConfig) -> tuple[bool, str]:
         )
     except Exception as exc:
         return False, f"Invalid OCR command template: {exc}"
+    if not parts:
+        return False, "Invalid OCR command template: command is empty"
+    executable = parts[0]
+    if "/" in executable:
+        executable_path = Path(executable)
+        if not executable_path.is_file():
+            return False, f"Missing OCR executable: {executable}"
+    elif shutil.which(executable) is None:
+        return False, f"Missing OCR executable on PATH: {executable}"
     for part in parts[1:]:
         if part.endswith(".py") or part.startswith("./"):
             if not Path(part).exists():
@@ -103,23 +110,49 @@ def _server_root(base_url: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, "", "", "")).rstrip("/")
 
 
-def _model_ids(payload: dict) -> set[str]:
+def _model_ids(payload: Any) -> set[str]:
+    data = _object_list(payload, "data")
+    models = _object_list(payload, "models")
     ids = {
         str(item[key])
-        for item in payload.get("data", []) + payload.get("models", [])
+        for item in data + models
         for key in ("id", "model", "name")
         if item.get(key)
     }
     return ids
 
 
-def _has_vision(models_payload: dict, props_payload: dict) -> bool:
-    if props_payload.get("modalities", {}).get("vision") is True:
+def _model_alias(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        raise ValueError("/props response must be a JSON object")
+    value = payload.get("model_alias")
+    return str(value) if value is not None else None
+
+
+def _has_vision(models_payload: Any, props_payload: Any) -> bool:
+    if not isinstance(props_payload, dict):
+        raise ValueError("/props response must be a JSON object")
+    modalities = props_payload.get("modalities", {})
+    if not isinstance(modalities, dict):
+        raise ValueError("/props modalities must be a JSON object")
+    if modalities.get("vision") is True:
         return True
-    return any(
-        "multimodal" in item.get("capabilities", [])
-        for item in models_payload.get("models", [])
-    )
+    for item in _object_list(models_payload, "models"):
+        capabilities = item.get("capabilities", [])
+        if not isinstance(capabilities, list):
+            raise ValueError("/v1/models capabilities must be a JSON array")
+        if "multimodal" in capabilities:
+            return True
+    return False
+
+
+def _object_list(payload: Any, key: str) -> list[dict]:
+    if not isinstance(payload, dict):
+        raise ValueError("/v1/models response must be a JSON object")
+    value = payload.get(key, [])
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError(f"/v1/models {key} must be an array of objects")
+    return value
 
 
 def _unavailable_message(
