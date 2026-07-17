@@ -7,6 +7,7 @@ Recommended server:
 llama-server \
   -m ./models/ocr/GLM-OCR-Q8_0.gguf \
   --mmproj ./models/ocr/mmproj-GLM-OCR-Q8_0.gguf \
+  --alias GLM-OCR \
   -ngl 0 \
   --port 8082
 """
@@ -76,6 +77,8 @@ def main() -> None:
     parser.add_argument("--input", required=True, help="Rendered page image path.")
     parser.add_argument("--output", required=True, help="Output Markdown path.")
     parser.add_argument("--output-json", help="Optional raw JSON response path.")
+    parser.add_argument("--base-url", help="llama.cpp OpenAI-compatible base URL.")
+    parser.add_argument("--model", help="Model alias exposed by llama.cpp.")
     args = parser.parse_args()
 
     image = Path(args.input)
@@ -84,8 +87,10 @@ def main() -> None:
     if not image.exists():
         raise SystemExit(f"Input image does not exist: {image}")
 
-    base_url = os.getenv("SCRIBEBASE_OCR_BASE_URL", "http://localhost:8082/v1").rstrip("/")
-    model = os.getenv("SCRIBEBASE_OCR_MODEL", "GLM-OCR")
+    base_url = (
+        args.base_url or os.getenv("SCRIBEBASE_OCR_BASE_URL", "http://localhost:8082/v1")
+    ).rstrip("/")
+    model = args.model or os.getenv("SCRIBEBASE_OCR_MODEL", "GLM-OCR")
     prompt = os.getenv("SCRIBEBASE_OCR_PROMPT", DEFAULT_PROMPT)
     max_tokens = int(os.getenv("SCRIBEBASE_OCR_MAX_TOKENS", "4096"))
     timeout = int(os.getenv("SCRIBEBASE_OCR_TIMEOUT_SECONDS", "900"))
@@ -112,7 +117,8 @@ def main() -> None:
         print(f"GLM-OCR adapter failed: {exc}", file=sys.stderr)
         print(
             "Start the OCR server with: llama-server -m ./models/ocr/GLM-OCR-Q8_0.gguf "
-            "--mmproj ./models/ocr/mmproj-GLM-OCR-Q8_0.gguf -ngl 0 --port 8082",
+            "--mmproj ./models/ocr/mmproj-GLM-OCR-Q8_0.gguf --alias GLM-OCR "
+            "-ngl 0 --port 8082",
             file=sys.stderr,
         )
         raise SystemExit(1) from exc

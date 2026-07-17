@@ -21,6 +21,8 @@ class ShellOCRProvider:
             "output_json": str(output_json),
             "page_number": str(metadata.get("page_number", "")),
             "source_id": str(metadata.get("source_id", "")),
+            "base_url": self.config.base_url or "",
+            "model_name": self.config.model_name or "",
         }
         command = self.config.command.format(**values)
         return shlex.split(command)

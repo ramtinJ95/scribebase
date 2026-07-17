@@ -6,8 +6,17 @@ import fitz
 import pytest
 
 from scribebase.config import AppConfig, PDFDetectionConfig
-from scribebase.extraction import extract_source, read_page_metadata
+from scribebase.extraction import _ocr_provider, extract_source, read_page_metadata
 from scribebase.models import OCRResult
+
+
+def test_auto_selects_glm_ocr_without_apple_vision_fallback() -> None:
+    config = AppConfig()
+
+    provider = _ocr_provider("auto", config)
+
+    assert provider.name == "glm_ocr"
+    assert provider.config.model_name == "GLM-OCR"
 
 
 def test_extract_true_text_pdf_without_ocr(tmp_path) -> None:

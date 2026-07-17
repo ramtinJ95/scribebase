@@ -44,18 +44,23 @@ class PDFDetectionConfig(BaseModel):
 
 
 class OCRProviderConfig(BaseModel):
-    command: str = "./scripts/run_local_ocr.py --input {input_image} --output {output_md}"
+    command: str = (
+        "./scripts/run_local_ocr.py --input {input_image} --output {output_md} "
+        "--base-url {base_url} --model {model_name}"
+    )
     timeout_seconds: int = 900
     model_name: str | None = "GLM-OCR"
+    base_url: str | None = "http://localhost:8082/v1"
+    require_multimodal: bool = True
     render_dpi: int | None = None
 
 
 class OCRConfig(BaseModel):
-    default_provider: str = "shell"
+    default_provider: str = "glm_ocr"
     render_dpi: int = 300
     providers: dict[str, OCRProviderConfig] = Field(
         default_factory=lambda: {
-            "shell": OCRProviderConfig(),
+            "glm_ocr": OCRProviderConfig(),
             "apple_vision": OCRProviderConfig(
                 command=(
                     "swift ./scripts/run_apple_vision_ocr.swift "
@@ -63,10 +68,20 @@ class OCRConfig(BaseModel):
                 ),
                 timeout_seconds=120,
                 model_name="Apple Vision",
+                base_url=None,
+                require_multimodal=False,
                 render_dpi=200,
             ),
         }
     )
+
+    @model_validator(mode="after")
+    def _validate_default_provider(self) -> "OCRConfig":
+        if self.default_provider not in self.providers:
+            raise ValueError(
+                f"OCR default_provider is not configured: {self.default_provider}"
+            )
+        return self
 
 
 class ChunkingConfig(BaseModel):

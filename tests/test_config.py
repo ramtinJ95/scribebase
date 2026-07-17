@@ -2,6 +2,7 @@ import pytest
 
 from scribebase.config import (
     API_TOKEN_ENV,
+    AppConfig,
     CONFIG_ENV,
     DATA_DIR_ENV,
     HOST_ENV,
@@ -32,6 +33,10 @@ def test_config_defaults_are_local_first() -> None:
     assert config.chunking.overlap_chars == 150
     assert config.chunking.min_chars == 250
     assert config.chunking.chunker_version == "v2"
+    assert config.ocr.default_provider == "glm_ocr"
+    assert config.ocr.providers["glm_ocr"].base_url == "http://localhost:8082/v1"
+    assert config.ocr.providers["glm_ocr"].model_name == "GLM-OCR"
+    assert config.ocr.providers["glm_ocr"].require_multimodal is True
     assert config.ocr.providers["apple_vision"].render_dpi == 200
     assert config.server.host == "127.0.0.1"
     assert config.server.port == 8765
@@ -42,7 +47,14 @@ def test_config_round_trip(tmp_path) -> None:
     path = write_default_config(tmp_path)
     loaded = load_config(path)
     assert loaded.data_dir == tmp_path
-    assert loaded.ocr.default_provider == "shell"
+    assert loaded.ocr.default_provider == "glm_ocr"
+
+
+def test_config_rejects_missing_default_ocr_provider() -> None:
+    with pytest.raises(ValueError, match="default_provider is not configured: missing"):
+        AppConfig.model_validate(
+            {"ocr": {"default_provider": "missing", "providers": {"glm_ocr": {}}}}
+        )
 
 
 def test_load_config_rejects_removed_llm_section(tmp_path) -> None:
