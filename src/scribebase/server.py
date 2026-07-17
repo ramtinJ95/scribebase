@@ -21,6 +21,7 @@ from scribebase.models import (
     SourceType,
 )
 from scribebase.paths import ensure_data_layout
+from scribebase.ocr.health import check_ocr_provider_health
 from scribebase.retrieval.context_pack import build_context_pack
 from scribebase.retrieval.search import search_chunks
 from scribebase.server_jobs import (
@@ -50,6 +51,7 @@ class HealthResponse(BaseModel):
     sources_count: int
     weaviate: ServiceHealth
     embeddings: ServiceHealth
+    ocr: ServiceHealth
     worker: ServiceHealth
     auth_required: bool
 
@@ -127,6 +129,7 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
             sources_count=len(list_manifests(config.data_dir)),
             weaviate=_weaviate_health(config),
             embeddings=_embedding_health(config),
+            ocr=_ocr_health(config),
             worker=_worker_health(config),
             auth_required=bool(api_token),
         )
@@ -370,6 +373,12 @@ def _weaviate_health(config: AppConfig) -> ServiceHealth:
 
 def _embedding_health(config: AppConfig) -> ServiceHealth:
     ok, message = LlamaCppEmbeddingClient(config.embedding).check_health()
+    return ServiceHealth(ok=ok, message=message)
+
+
+def _ocr_health(config: AppConfig) -> ServiceHealth:
+    provider = config.ocr.providers.get(config.ocr.default_provider)
+    ok, message = check_ocr_provider_health(config.ocr.default_provider, provider)
     return ServiceHealth(ok=ok, message=message)
 
 

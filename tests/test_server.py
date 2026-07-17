@@ -27,6 +27,10 @@ def _client(tmp_path, monkeypatch) -> TestClient:
         "scribebase.server._embedding_health",
         lambda _: ServiceHealth(ok=True, message="ready"),
     )
+    monkeypatch.setattr(
+        "scribebase.server._ocr_health",
+        lambda _: ServiceHealth(ok=True, message="GLM-OCR ready"),
+    )
     return TestClient(create_app(config, api_token=TOKEN))
 
 
@@ -45,6 +49,7 @@ def test_health_reports_readiness(tmp_path, monkeypatch) -> None:
     assert body["data_dir"] == str(tmp_path)
     assert body["auth_required"] is True
     assert body["weaviate"] == {"ok": True, "message": "ready"}
+    assert body["ocr"] == {"ok": True, "message": "GLM-OCR ready"}
     assert body["worker"] == {"ok": False, "message": "worker is not running"}
 
 

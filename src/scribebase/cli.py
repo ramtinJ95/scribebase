@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.util
-import shlex
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +18,7 @@ from scribebase.extraction import extract_source
 from scribebase.indexing import index_source, load_chunks, rebuild_index
 from scribebase.logging_utils import setup_logging
 from scribebase.models import SearchFilters
+from scribebase.ocr.health import check_ocr_provider_health
 from scribebase.paths import ensure_data_layout
 from scribebase.retrieval.search import format_search_results, search_chunks
 from scribebase.source_registry import backfill_source_identities, find_source, list_manifests
@@ -101,9 +101,9 @@ def doctor() -> None:
         )
 
     provider = config.ocr.providers.get(config.ocr.default_provider)
-    ocr_ok, ocr_msg = _ocr_doctor_message(provider.command if provider else None)
+    ocr_ok, ocr_msg = check_ocr_provider_health(config.ocr.default_provider, provider)
     typer.echo(
-        f"[{'OK' if ocr_ok else 'WARN'}] OCR provider: {config.ocr.default_provider}"
+        f"[{'OK' if ocr_ok else 'FAIL'}] OCR provider: {config.ocr.default_provider}"
         + (f" ({provider.command})" if provider else "")
         + (f"; {ocr_msg}" if ocr_msg else "")
     )
@@ -391,26 +391,6 @@ def chunks_show(chunk_id: str) -> None:
             typer.echo(chunk.model_dump_json(indent=2))
             return
     raise typer.Exit(code=1)
-
-
-def _ocr_doctor_message(command: str | None) -> tuple[bool, str]:
-    if not command:
-        return False, "no command configured"
-    try:
-        parts = shlex.split(
-            command.format(
-                input_image="x", output_md="y", output_json="z", page_number=1, source_id="s"
-            )
-        )
-    except Exception as exc:
-        return False, f"invalid command template: {exc}"
-    for part in parts[1:]:
-        if part.endswith(".py") or part.startswith("./"):
-            path = Path(part)
-            if not path.exists():
-                return False, f"missing adapter path: {part}"
-            break
-    return True, "configured"
 
 
 if __name__ == "__main__":

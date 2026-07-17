@@ -109,7 +109,7 @@ def test_auto_scanned_pdf_ocr_image_backed_pages(tmp_path, monkeypatch) -> None:
                 model="fake-ocr",
             )
 
-    monkeypatch.setattr("scribebase.extraction._ocr_provider", lambda *_: FakeOCRProvider())
+    monkeypatch.setattr("scribebase.extraction._ready_ocr_provider", lambda *_: FakeOCRProvider())
     config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     manifest = extract_source(
@@ -126,6 +126,41 @@ def test_auto_scanned_pdf_ocr_image_backed_pages(tmp_path, monkeypatch) -> None:
 
     assert manifest.extraction_summary.pages_total == 1
     assert manifest.extraction_summary.pages_ocr == 1
+
+
+def test_auto_fails_actionably_when_glm_ocr_is_unavailable(tmp_path, monkeypatch) -> None:
+    image = tmp_path / "scan.png"
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
+    pix.clear_with(0)
+    pix.save(image)
+    pdf = tmp_path / "scan.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_image(fitz.Rect(72, 72, 200, 200), filename=image)
+    doc.save(pdf)
+    doc.close()
+
+    def unavailable(provider_name, _provider):  # noqa: ANN001, ANN202
+        raise RuntimeError(
+            f"OCR provider {provider_name!r} is unavailable at http://localhost:8082/v1. "
+            "No OCR fallback will be used. Start the dedicated GLM-OCR service with --mmproj."
+        )
+
+    monkeypatch.setattr("scribebase.extraction.ensure_ocr_provider_ready", unavailable)
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
+
+    with pytest.raises(RuntimeError, match="No OCR fallback will be used.*--mmproj"):
+        extract_source(
+            pdf,
+            title="Unavailable OCR",
+            source_type="book",
+            course=None,
+            chapter=None,
+            language="en",
+            ocr="auto",
+            config=config,
+            logger=logging.getLogger("test"),
+        )
 
 
 def test_auto_mixed_pdf_ocr_scanned_pages(tmp_path, monkeypatch) -> None:
@@ -156,7 +191,7 @@ def test_auto_mixed_pdf_ocr_scanned_pages(tmp_path, monkeypatch) -> None:
                 model="fake-ocr",
             )
 
-    monkeypatch.setattr("scribebase.extraction._ocr_provider", lambda *_: FakeOCRProvider())
+    monkeypatch.setattr("scribebase.extraction._ready_ocr_provider", lambda *_: FakeOCRProvider())
     config = AppConfig(data_dir=tmp_path / ".scribebase")
 
     manifest = extract_source(
@@ -263,7 +298,7 @@ def test_auto_ocrs_vector_backed_page_without_embedded_images(tmp_path, monkeypa
                 model="fake-ocr",
             )
 
-    monkeypatch.setattr("scribebase.extraction._ocr_provider", lambda *_: FakeOCRProvider())
+    monkeypatch.setattr("scribebase.extraction._ready_ocr_provider", lambda *_: FakeOCRProvider())
     config = AppConfig(data_dir=tmp_path / "data")
 
     manifest = extract_source(

@@ -17,6 +17,7 @@ from scribebase.markdown.frontmatter import read_markdown_with_frontmatter
 from scribebase.markdown.normalize import combine_pages, normalize_page_markdown
 from scribebase.models import PageMetadata, SourceManifest, SourceMetadataInput, TextQuality
 from scribebase.ocr.shell_provider import ShellOCRProvider
+from scribebase.ocr.health import ensure_ocr_provider_ready
 from scribebase.paths import chapter_file_name, source_dir, source_root_subdirs
 from scribebase.pdf_router import evaluate_text_quality
 from scribebase.source_registry import (
@@ -404,7 +405,7 @@ def _extract_pdf(
                     raise RuntimeError(
                         f"Page {page_number} has insufficient text and OCR is disabled"
                     )
-                provider = provider or _ocr_provider(ocr, config)
+                provider = provider or _ready_ocr_provider(ocr, config)
                 render_dpi = provider.config.render_dpi or config.ocr.render_dpi
                 logger.info(
                     "Page %s: insufficient text, rendering at %s DPI", page_number, render_dpi
@@ -525,7 +526,7 @@ def _extract_images(
     if ocr == "never":
         raise RuntimeError("Image inputs require OCR; remove --ocr never")
     paths = source_root_subdirs(Path(manifest.data_dir))
-    provider = _ocr_provider(ocr, config)
+    provider = _ready_ocr_provider(ocr, config)
     image_paths = _image_files(image_input)
     pages: list[PageMetadata] = []
     for page_index, image_path in enumerate(image_paths):
@@ -660,6 +661,12 @@ def _ocr_provider(ocr: str, config: AppConfig) -> ShellOCRProvider:
     if provider_cfg is None:
         raise ValueError(f"OCR provider not configured: {provider_name}")
     return ShellOCRProvider(provider_cfg, name=provider_name)
+
+
+def _ready_ocr_provider(ocr: str, config: AppConfig) -> ShellOCRProvider:
+    provider = _ocr_provider(ocr, config)
+    ensure_ocr_provider_ready(provider.name, provider.config)
+    return provider
 
 
 def _image_files(path: Path) -> list[Path]:
