@@ -12,6 +12,7 @@ class ShellOCRProvider:
     def __init__(self, config: OCRProviderConfig, name: str = "shell"):
         self.config = config
         self.name = name
+        self._readiness_verified = False
 
     def format_command(self, image_path: Path, output_md_path: Path, metadata: dict) -> list[str]:
         output_json = output_md_path.with_suffix(".json")

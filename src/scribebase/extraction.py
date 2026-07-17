@@ -423,9 +423,6 @@ def _extract_pdf(
                     )
                 else:
                     if provider is None:
-                        ensure_ocr_provider_ready(
-                            selected_provider.name, selected_provider.config
-                        )
                         provider = selected_provider
                     meta = _run_ocr_page(
                         image_path,
@@ -567,7 +564,7 @@ def _extract_images(
     if ocr == "never":
         raise RuntimeError("Image inputs require OCR; remove --ocr never")
     paths = source_root_subdirs(Path(manifest.data_dir))
-    provider = _ready_ocr_provider(ocr, config)
+    provider = _ocr_provider(ocr, config)
     image_paths = _image_files(image_input)
     pages: list[PageMetadata] = []
     for page_index, image_path in enumerate(image_paths):
@@ -654,6 +651,9 @@ def _run_ocr_page(
 ) -> PageMetadata:
     logger.info("Page %s: OCR with %s provider", page_number, provider.name)
     try:
+        if not getattr(provider, "_readiness_verified", False):
+            ensure_ocr_provider_ready(provider.name, provider.config)
+            provider._readiness_verified = True
         result = provider.ocr_image(
             image_path,
             md_path,
@@ -714,12 +714,6 @@ def _ocr_provider(ocr: str, config: AppConfig) -> ShellOCRProvider:
     if provider_cfg is None:
         raise ValueError(f"OCR provider not configured: {provider_name}")
     return ShellOCRProvider(provider_cfg, name=provider_name)
-
-
-def _ready_ocr_provider(ocr: str, config: AppConfig) -> ShellOCRProvider:
-    provider = _ocr_provider(ocr, config)
-    ensure_ocr_provider_ready(provider.name, provider.config)
-    return provider
 
 
 def _image_files(path: Path) -> list[Path]:

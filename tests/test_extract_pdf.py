@@ -245,6 +245,77 @@ def test_auto_fails_actionably_when_glm_ocr_is_unavailable(tmp_path, monkeypatch
         )
 
 
+def test_continue_on_ocr_error_records_unavailable_provider_failure(
+    tmp_path, monkeypatch
+) -> None:
+    image = tmp_path / "scan.png"
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
+    pix.clear_with(0)
+    pix.save(image)
+    pdf = tmp_path / "scan.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_image(fitz.Rect(72, 72, 200, 200), filename=image)
+    doc.save(pdf)
+    doc.close()
+
+    def unavailable(provider_name, _provider):  # noqa: ANN001, ANN202
+        raise RuntimeError(
+            f"OCR provider {provider_name!r} is unavailable. No OCR fallback will be used."
+        )
+
+    monkeypatch.setattr("scribebase.extraction.ensure_ocr_provider_ready", unavailable)
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
+
+    manifest = extract_source(
+        pdf,
+        title="Unavailable OCR Continued",
+        source_type="book",
+        course=None,
+        chapter=None,
+        language="en",
+        ocr="auto",
+        config=config,
+        logger=logging.getLogger("test"),
+        continue_on_ocr_error=True,
+    )
+
+    pages = read_page_metadata(Path(manifest.data_dir))
+    assert pages[0].extraction_method == "failed"
+    assert "ocr_failed" in pages[0].quality_flags
+    assert "No OCR fallback will be used" in Path(pages[0].markdown_path).read_text()
+
+
+def test_image_continue_on_ocr_error_handles_unavailable_provider(tmp_path, monkeypatch) -> None:
+    image = tmp_path / "scan.png"
+    pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
+    pix.clear_with(0)
+    pix.save(image)
+
+    monkeypatch.setattr(
+        "scribebase.extraction.ensure_ocr_provider_ready",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("GLM-OCR unavailable")),
+    )
+    config = AppConfig(data_dir=tmp_path / ".scribebase")
+
+    manifest = extract_source(
+        image,
+        title="Unavailable Image OCR",
+        source_type="notes",
+        course=None,
+        chapter=None,
+        language="en",
+        ocr="auto",
+        config=config,
+        logger=logging.getLogger("test"),
+        continue_on_ocr_error=True,
+    )
+
+    pages = read_page_metadata(Path(manifest.data_dir))
+    assert pages[0].extraction_method == "failed"
+    assert "GLM-OCR unavailable" in Path(pages[0].markdown_path).read_text()
+
+
 def test_auto_mixed_pdf_ocr_scanned_pages(tmp_path, monkeypatch) -> None:
     image = tmp_path / "scan.png"
     pix = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), 0)
