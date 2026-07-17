@@ -44,14 +44,11 @@ class PDFDetectionConfig(BaseModel):
 
 
 class OCRProviderConfig(BaseModel):
-    command: str = (
-        "./scripts/run_local_ocr.py --input {input_image} --output {output_md} "
-        "--base-url {base_url} --model {model_name}"
-    )
+    command: str
     timeout_seconds: int = 900
-    model_name: str | None = "GLM-OCR"
-    base_url: str | None = "http://localhost:8082/v1"
-    require_multimodal: bool = True
+    model_name: str | None = None
+    base_url: str | None = None
+    require_multimodal: bool = False
     render_dpi: int | None = None
 
 
@@ -60,7 +57,15 @@ class OCRConfig(BaseModel):
     render_dpi: int = 300
     providers: dict[str, OCRProviderConfig] = Field(
         default_factory=lambda: {
-            "glm_ocr": OCRProviderConfig(),
+            "glm_ocr": OCRProviderConfig(
+                command=(
+                    "./scripts/run_local_ocr.py --input {input_image} --output {output_md} "
+                    "--base-url {base_url} --model {model_name}"
+                ),
+                model_name="GLM-OCR",
+                base_url="http://localhost:8082/v1",
+                require_multimodal=True,
+            ),
             "apple_vision": OCRProviderConfig(
                 command=(
                     "swift ./scripts/run_apple_vision_ocr.swift "

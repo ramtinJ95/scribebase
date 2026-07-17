@@ -1,4 +1,4 @@
-from scribebase.config import OCRProviderConfig
+from scribebase.config import OCRProviderConfig, default_config
 from scribebase.ocr.shell_provider import ShellOCRProvider
 
 
@@ -13,12 +13,13 @@ def test_shell_ocr_provider_formats_command(tmp_path) -> None:
 
 
 def test_shell_ocr_provider_can_use_configured_name() -> None:
-    provider = ShellOCRProvider(OCRProviderConfig(), name="apple_vision")
+    provider = ShellOCRProvider(OCRProviderConfig(command="true"), name="apple_vision")
     assert provider.name == "apple_vision"
 
 
 def test_glm_ocr_command_uses_configured_server_and_model(tmp_path) -> None:
-    provider = ShellOCRProvider(OCRProviderConfig(), name="glm_ocr")
+    provider_config = default_config().ocr.providers["glm_ocr"]
+    provider = ShellOCRProvider(provider_config, name="glm_ocr")
 
     cmd = provider.format_command(tmp_path / "page.png", tmp_path / "page.md", {})
 

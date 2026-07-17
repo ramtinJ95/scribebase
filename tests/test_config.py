@@ -53,8 +53,29 @@ def test_config_round_trip(tmp_path) -> None:
 def test_config_rejects_missing_default_ocr_provider() -> None:
     with pytest.raises(ValueError, match="default_provider is not configured: missing"):
         AppConfig.model_validate(
-            {"ocr": {"default_provider": "missing", "providers": {"glm_ocr": {}}}}
+            {
+                "ocr": {
+                    "default_provider": "missing",
+                    "providers": {"custom": {"command": "custom-ocr"}},
+                }
+            }
         )
+
+
+def test_custom_ocr_provider_does_not_inherit_glm_runtime() -> None:
+    config = AppConfig.model_validate(
+        {
+            "ocr": {
+                "default_provider": "custom",
+                "providers": {"custom": {"command": "custom-ocr --input {input_image}"}},
+            }
+        }
+    )
+
+    provider = config.ocr.providers["custom"]
+    assert provider.model_name is None
+    assert provider.base_url is None
+    assert provider.require_multimodal is False
 
 
 def test_load_config_rejects_removed_llm_section(tmp_path) -> None:
