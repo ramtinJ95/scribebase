@@ -1,7 +1,12 @@
 # Migration plan: Qwen3-Embedding-4B → Nemotron-3-Embed-1B-BF16
 
-Status: Phase 0 complete (2026-08-15) — parity PASS, min cosine 0.999927.
-Next: Phase 1 (code changes).
+Status: COMPLETE (2026-08-15). All phases done. Parity PASS (min cosine
+0.999927), full reindex of 8 sources / 5,643 chunks promoted to alias `Chunk`,
+manifests stamped `Nemotron-3-Embed-1B-BF16` @ 2048 dims, baseline query
+comparison showed no regressions (kubelet-eviction query improved). Follow-up
+planned: reduce embedding server `--ctx-size` 32768 → 8192 to cut steady-state
+memory. Reminder: launchd plist edits need `launchctl bootout` + `bootstrap`;
+`kickstart -k` restarts with the cached job definition.
 
 ## Phase 0 results and required workarounds
 
