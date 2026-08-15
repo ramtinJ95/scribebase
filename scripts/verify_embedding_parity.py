@@ -123,6 +123,12 @@ def main() -> int:
     parser.add_argument("--model-name", required=True, help="model name the server expects")
     parser.add_argument("--reference-model", required=True, help="HF repo id or local checkpoint dir")
     parser.add_argument("--threshold", type=float, default=0.99)
+    parser.add_argument(
+        "--expected-dimension",
+        type=int,
+        default=2048,
+        help="required embedding dimension (default: 2048)",
+    )
     args = parser.parse_args()
 
     queries = [QUERY_PREFIX + q for q, _ in PAIRS]
@@ -134,8 +140,11 @@ def main() -> int:
 
     dim_server, dim_ref = len(server_vecs[0]), len(ref_vecs[0])
     print(f"dimensions: server={dim_server} reference={dim_ref}")
-    if dim_server != dim_ref:
-        print("FAIL dimension mismatch")
+    if dim_server != args.expected_dimension or dim_ref != args.expected_dimension:
+        print(
+            "FAIL dimension mismatch: "
+            f"expected={args.expected_dimension} server={dim_server} reference={dim_ref}"
+        )
         return 1
 
     sims = [cosine(s, r) for s, r in zip(server_vecs, ref_vecs)]
