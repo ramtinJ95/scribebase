@@ -41,8 +41,10 @@ def _fail(exc: Exception) -> None:
     if "embedding" in message.lower() or "localhost:8080" in message:
         typer.echo(
             "Start llama.cpp embeddings, e.g.: "
-            "llama-server --model ./models/Qwen3-Embedding-4B-Q4_K_M.gguf "
-            "--embedding --pooling last -ngl 99 --port 8080",
+            "llama-server --model ./models/Nemotron-3-Embed-1B-BF16.gguf "
+            "--embedding --pooling mean "
+            "--override-kv tokenizer.ggml.add_bos_token=bool:false "
+            "--alias Nemotron-3-Embed-1B-BF16 -ngl 99 --port 8080",
             err=True,
         )
     raise typer.Exit(code=1)
@@ -102,8 +104,10 @@ def doctor() -> None:
         healthy = False
         typer.echo(f"[FAIL] embeddings: {exc}")
         typer.echo(
-            "Example: llama-server --model ./models/Qwen3-Embedding-4B-Q4_K_M.gguf "
-            "--embedding --pooling last -ngl 99 --port 8080"
+            "Example: llama-server --model ./models/Nemotron-3-Embed-1B-BF16.gguf "
+            "--embedding --pooling mean "
+            "--override-kv tokenizer.ggml.add_bos_token=bool:false "
+            "--alias Nemotron-3-Embed-1B-BF16 -ngl 99 --port 8080"
         )
 
     provider = config.ocr.providers.get(config.ocr.default_provider)

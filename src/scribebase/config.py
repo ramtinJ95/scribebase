@@ -27,13 +27,11 @@ class WeaviateConfig(BaseModel):
 class EmbeddingConfig(BaseModel):
     provider: str = "llamacpp"
     base_url: str = "http://localhost:8080/v1"
-    model: str = "Qwen3-Embedding-4B-Q4_K_M.gguf"
+    model: str = "Nemotron-3-Embed-1B-BF16"
     timeout_seconds: int = 120
     batch_size: int = 8
-    query_instruction: str = (
-        "Instruct: Given a question, retrieve relevant source passages that answer it\nQuery: "
-    )
-    document_instruction: str = ""
+    query_instruction: str = "query: "
+    document_instruction: str = "passage: "
     normalize: bool = True
     dimension: int | None = None
 
