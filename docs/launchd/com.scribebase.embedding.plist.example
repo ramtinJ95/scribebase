@@ -20,6 +20,10 @@
     <string>tokenizer.ggml.add_bos_token=bool:false</string>
     <string>--alias</string>
     <string>Nemotron-3-Embed-1B-BF16</string>
+    <string>--ubatch-size</string>
+    <string>4096</string>
+    <string>--batch-size</string>
+    <string>4096</string>
     <string>--ctx-size</string>
     <string>32768</string>
     <string>-ngl</string>

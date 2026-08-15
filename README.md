@@ -55,6 +55,8 @@ llama-server \
   --pooling mean \
   --override-kv tokenizer.ggml.add_bos_token=bool:false \
   --alias Nemotron-3-Embed-1B-BF16 \
+  --ubatch-size 4096 \
+  --batch-size 4096 \
   --ctx-size 32768 \
   -ngl 99 \
   --port 8080
@@ -304,6 +306,8 @@ llama-server \
   --pooling mean \
   --override-kv tokenizer.ggml.add_bos_token=bool:false \
   --alias Nemotron-3-Embed-1B-BF16 \
+  --ubatch-size 4096 \
+  --batch-size 4096 \
   -ngl 99 \
   --port 8080
 ```
