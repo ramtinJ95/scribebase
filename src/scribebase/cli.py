@@ -44,7 +44,8 @@ def _fail(exc: Exception) -> None:
             "llama-server --model ./models/Nemotron-3-Embed-1B-BF16.gguf "
             "--embedding --pooling mean "
             "--override-kv tokenizer.ggml.add_bos_token=bool:false "
-            "--alias Nemotron-3-Embed-1B-BF16 -ub 4096 -b 4096 -ngl 99 --port 8080",
+            "--alias Nemotron-3-Embed-1B-BF16 -ub 4096 -b 4096 "
+            "--ctx-size 8192 -ngl 99 --port 8080",
             err=True,
         )
     raise typer.Exit(code=1)
@@ -107,7 +108,8 @@ def doctor() -> None:
             "Example: llama-server --model ./models/Nemotron-3-Embed-1B-BF16.gguf "
             "--embedding --pooling mean "
             "--override-kv tokenizer.ggml.add_bos_token=bool:false "
-            "--alias Nemotron-3-Embed-1B-BF16 -ub 4096 -b 4096 -ngl 99 --port 8080"
+            "--alias Nemotron-3-Embed-1B-BF16 -ub 4096 -b 4096 "
+            "--ctx-size 8192 -ngl 99 --port 8080"
         )
 
     provider = config.ocr.providers.get(config.ocr.default_provider)
@@ -326,7 +328,6 @@ def search(
     language: Optional[str] = None,
     top_k: Optional[int] = None,
     alpha: Optional[float] = None,
-    allow_model_mismatch: bool = False,
 ) -> None:
     try:
         config = _config()
@@ -360,7 +361,6 @@ def search(
             config,
             top_k,
             alpha,
-            allow_model_mismatch,
         )
         typer.echo(format_search_results(results))
     except Exception as exc:

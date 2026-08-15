@@ -19,6 +19,19 @@ class FakeResponse:
         }
 
 
+class FakeModelsResponse:
+    def __init__(self, model_ids: list[str], status_code: int = 200) -> None:
+        self.model_ids = model_ids
+        self.status_code = status_code
+
+    @property
+    def is_success(self) -> bool:
+        return 200 <= self.status_code < 300
+
+    def json(self):
+        return {"data": [{"id": model_id} for model_id in self.model_ids]}
+
+
 def test_embedding_client_parses_openai_style_response(monkeypatch) -> None:
     calls = []
 
@@ -110,3 +123,28 @@ def test_health_check_propagates_malformed_embedding_url(monkeypatch) -> None:  
 
     with pytest.raises(httpx.UnsupportedProtocol, match="missing URL scheme"):
         LlamaCppEmbeddingClient(EmbeddingConfig()).check_health()
+
+
+def test_health_check_requires_configured_model_alias(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        "scribebase.embeddings.llamacpp_client.httpx.get",
+        lambda *_args, **_kwargs: FakeModelsResponse(["Qwen3-Embedding-4B-Q4_K_M.gguf"]),
+    )
+
+    ok, message = LlamaCppEmbeddingClient(EmbeddingConfig()).check_health()
+
+    assert ok is False
+    assert "is not advertised" in message
+
+
+def test_health_check_accepts_configured_model_alias(monkeypatch) -> None:  # noqa: ANN001
+    config = EmbeddingConfig()
+    monkeypatch.setattr(
+        "scribebase.embeddings.llamacpp_client.httpx.get",
+        lambda *_args, **_kwargs: FakeModelsResponse([config.model]),
+    )
+
+    ok, message = LlamaCppEmbeddingClient(config).check_health()
+
+    assert ok is True
+    assert config.model in message

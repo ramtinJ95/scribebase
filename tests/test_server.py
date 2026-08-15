@@ -114,7 +114,7 @@ def test_sources_lists_manifests(tmp_path, monkeypatch) -> None:
 def test_search_returns_results(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
 
-    def fake_search(query, filters, config, top_k, alpha, allow_model_mismatch):
+    def fake_search(query, filters, config, top_k, alpha):
         assert query == "kubelet eviction"
         assert filters.source_type == "book"
         assert filters.tags == ["kubernetes", "ops"]
@@ -123,7 +123,6 @@ def test_search_returns_results(tmp_path, monkeypatch) -> None:
         assert filters.created_at_source_after.isoformat().startswith("2026-07-01")
         assert top_k == 3
         assert alpha == 0.5
-        assert allow_model_mismatch is True
         return [_result()]
 
     monkeypatch.setattr("scribebase.server.search_chunks", fake_search)
@@ -142,7 +141,6 @@ def test_search_returns_results(tmp_path, monkeypatch) -> None:
             },
             "top_k": 3,
             "alpha": 0.5,
-            "allow_model_mismatch": True,
         },
     )
 
@@ -150,6 +148,18 @@ def test_search_returns_results(tmp_path, monkeypatch) -> None:
     body = response.json()
     assert body["query"] == "kubelet eviction"
     assert body["results"][0]["chunk"]["chunk_id"] == "chunk-1"
+
+
+def test_search_rejects_removed_model_mismatch_escape_hatch(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/search",
+        headers=_auth(),
+        json={"query": "kubelet eviction", "allow_model_mismatch": True},
+    )
+
+    assert response.status_code == 422
 
 
 def test_context_returns_context_pack(tmp_path, monkeypatch) -> None:

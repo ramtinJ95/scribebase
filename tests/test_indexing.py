@@ -9,11 +9,14 @@ from scribebase.indexing import (
     _finish_incremental_transaction,
     _index_lock,
     _install_staged_files,
+    _validate_embedding_consistency,
     index_source,
     rebuild_index,
     recover_index_transactions,
 )
 from scribebase.models import Chunk, SourceManifest
+from scribebase.embeddings.profile import embedding_profile_fingerprint
+from scribebase.source_registry import write_manifest
 from scribebase.vectorstores.weaviate_store import CollectionAliasMigrationError
 
 
@@ -108,8 +111,49 @@ def test_index_source_streams_batches_before_removing_stale_chunks(tmp_path, mon
         (tmp_path / "sources" / manifest.source_id / "metadata" / "manifest.json").read_text()
     )
     assert saved_manifest.embedding_summary.embedding_dimension == 2
+    expected_profile = embedding_profile_fingerprint(config.embedding, 2)
+    assert saved_manifest.embedding_summary.embedding_profile_fingerprint == expected_profile
+    saved_chunks = [
+        Chunk.model_validate_json(line)
+        for line in (tmp_path / "sources" / manifest.source_id / "metadata" / "chunks.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    assert {chunk.embedding_profile_fingerprint for chunk in saved_chunks} == {expected_profile}
     assert not (tmp_path / ".index-transaction.json").exists()
     assert (tmp_path / "sources" / manifest.source_id / "metadata" / "chunks.jsonl").exists()
+
+
+def test_incremental_index_rejects_missing_embedding_profile_metadata(tmp_path) -> None:
+    config = default_config()
+    config.data_dir = tmp_path
+    existing = _manifest(tmp_path, "source-2")
+    existing.embedding_summary.embedding_model = config.embedding.model
+    existing.embedding_summary.embedding_dimension = 2048
+    existing.embedding_summary.indexed_in_weaviate = True
+    existing.embedding_summary.weaviate_collection = config.weaviate.collection
+    write_manifest(existing)
+
+    with pytest.raises(RuntimeError, match="profile metadata is missing"):
+        _validate_embedding_consistency(config, "source-1", 2048, False)
+
+
+def test_incremental_index_rejects_changed_embedding_profile(tmp_path) -> None:
+    config = default_config()
+    config.data_dir = tmp_path
+    existing = _manifest(tmp_path, "source-2")
+    existing.embedding_summary.embedding_model = config.embedding.model
+    existing.embedding_summary.embedding_dimension = 2048
+    existing.embedding_summary.embedding_profile_fingerprint = embedding_profile_fingerprint(
+        config.embedding, 2048
+    )
+    existing.embedding_summary.indexed_in_weaviate = True
+    existing.embedding_summary.weaviate_collection = config.weaviate.collection
+    write_manifest(existing)
+    config.embedding.document_instruction = "document: "
+
+    with pytest.raises(RuntimeError, match="profile mismatch"):
+        _validate_embedding_consistency(config, "source-1", 2048, False)
 
 
 def test_index_source_preserves_local_state_and_stale_vectors_on_batch_failure(

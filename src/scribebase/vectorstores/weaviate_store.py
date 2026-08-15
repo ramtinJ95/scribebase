@@ -41,6 +41,7 @@ WEAVIATE_CHUNK_PROPERTIES = {
     "language",
     "embedding_model",
     "embedding_dimension",
+    "embedding_profile_fingerprint",
     "created_at",
 }
 
@@ -170,6 +171,7 @@ class WeaviateStore:
                 Property(name="language", data_type=DataType.TEXT),
                 Property(name="embedding_model", data_type=DataType.TEXT),
                 Property(name="embedding_dimension", data_type=DataType.INT),
+                Property(name="embedding_profile_fingerprint", data_type=DataType.TEXT),
                 Property(name="created_at", data_type=DataType.DATE),
             ],
         )
