@@ -34,6 +34,13 @@ Three workarounds were needed; all are load-bearing for Phase 2/3:
    0.999927. This flag MUST be in the launchd plist; without it embeddings are
    silently degraded.
 
+4. **Micro-batch must cover the longest input.** Non-causal embedding requires
+   each input to fit within one physical batch; llama-server otherwise clamps
+   to `n_ubatch=512` and returns HTTP 500 for longer chunks ("input (N tokens)
+   is too large to process"). This surfaced during the first `rebuild-index
+   --all`, not during parity testing (short texts). Serve with
+   `--ubatch-size 4096 --batch-size 4096`.
+
 Non-issue confirmed: the config's `apply_yarn_scaling: false` is ignored by
 transformers, but llama.cpp and transformers apply YaRN identically, so rope
 needs no overrides (`--rope-scaling none` is NOT needed).
@@ -49,6 +56,8 @@ llama-server \
   --ctx-size 32768 \
   -ngl 99 \
   --alias Nemotron-3-Embed-1B-BF16 \
+  --ubatch-size 4096 \
+  --batch-size 4096 \
   --port 8080
 ```
 
@@ -102,6 +111,8 @@ thin OpenAI-compatible sentence-transformers wrapper (the app only speaks
      --ctx-size 32768 \
      -ngl 99 \
      --alias Nemotron-3-Embed-1B-BF16 \
+  --ubatch-size 4096 \
+  --batch-size 4096 \
      --port 8080
    ```
 

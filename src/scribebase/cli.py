@@ -44,7 +44,7 @@ def _fail(exc: Exception) -> None:
             "llama-server --model ./models/Nemotron-3-Embed-1B-BF16.gguf "
             "--embedding --pooling mean "
             "--override-kv tokenizer.ggml.add_bos_token=bool:false "
-            "--alias Nemotron-3-Embed-1B-BF16 -ngl 99 --port 8080",
+            "--alias Nemotron-3-Embed-1B-BF16 -ub 4096 -b 4096 -ngl 99 --port 8080",
             err=True,
         )
     raise typer.Exit(code=1)
@@ -107,7 +107,7 @@ def doctor() -> None:
             "Example: llama-server --model ./models/Nemotron-3-Embed-1B-BF16.gguf "
             "--embedding --pooling mean "
             "--override-kv tokenizer.ggml.add_bos_token=bool:false "
-            "--alias Nemotron-3-Embed-1B-BF16 -ngl 99 --port 8080"
+            "--alias Nemotron-3-Embed-1B-BF16 -ub 4096 -b 4096 -ngl 99 --port 8080"
         )
 
     provider = config.ocr.providers.get(config.ocr.default_provider)
