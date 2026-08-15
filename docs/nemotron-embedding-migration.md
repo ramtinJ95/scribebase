@@ -4,8 +4,9 @@ Status: COMPLETE (2026-08-15). All phases done. Parity PASS (min cosine
 0.999927), full reindex of 8 sources / 5,643 chunks promoted to alias `Chunk`,
 manifests stamped `Nemotron-3-Embed-1B-BF16` @ 2048 dims, baseline query
 comparison showed no regressions (kubelet-eviction query improved). Follow-up
-planned: reduce embedding server `--ctx-size` 32768 → 8192 to cut steady-state
-memory. Reminder: launchd plist edits need `launchctl bootout` + `bootstrap`;
+done: embedding server `--ctx-size` reduced 32768 → 8192, cutting steady-state
+RSS from 4.8 GB to 2.7 GB; chunking targets ~1,200 chars so inputs stay far
+below 8192 tokens. Reminder: launchd plist edits need `launchctl bootout` + `bootstrap`;
 `kickstart -k` restarts with the cached job definition.
 
 ## Phase 0 results and required workarounds
@@ -58,7 +59,7 @@ llama-server \
   --embedding \
   --pooling mean \
   --override-kv tokenizer.ggml.add_bos_token=bool:false \
-  --ctx-size 32768 \
+  --ctx-size 8192 \
   -ngl 99 \
   --alias Nemotron-3-Embed-1B-BF16 \
   --ubatch-size 4096 \
@@ -113,11 +114,11 @@ thin OpenAI-compatible sentence-transformers wrapper (the app only speaks
      --model ./models/Nemotron-3-Embed-1B-BF16.gguf \
      --embedding \
      --pooling mean \
-     --ctx-size 32768 \
+     --ctx-size 8192 \
      -ngl 99 \
      --alias Nemotron-3-Embed-1B-BF16 \
-  --ubatch-size 4096 \
-  --batch-size 4096 \
+     --ubatch-size 4096 \
+     --batch-size 4096 \
      --port 8080
    ```
 
