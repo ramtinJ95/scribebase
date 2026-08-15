@@ -6,6 +6,8 @@ It can ingest PDFs, scanned pages, images, handwritten notes, Markdown, plain te
 
 Local-first means extraction, OCR, embeddings, indexing, and retrieval run on your machine. ScribeBase does not call a generation model; consuming agents use the cited context it returns.
 
+See [CHANGELOG.md](CHANGELOG.md) for the evidence-based project history.
+
 ## What ScribeBase does
 
 - Extracts true-text PDFs with PyMuPDF/PyMuPDF4LLM.
@@ -308,6 +310,7 @@ llama-server \
   --alias Nemotron-3-Embed-1B-BF16 \
   --ubatch-size 4096 \
   --batch-size 4096 \
+  --ctx-size 8192 \
   -ngl 99 \
   --port 8080
 ```
@@ -326,7 +329,10 @@ Notes:
   stays unprefixed.
 - The model name in `.scribebase/config.yaml` must match the server model name
   (set via `--alias`).
-- ScribeBase stores embedding model metadata and rejects accidental mixed-model retrieval by default.
+- ScribeBase fingerprints the complete embedding profile (model, dimension,
+  query/document instructions, and normalization) and rejects missing or
+  mismatched profile metadata. Changing the profile requires
+  `scribebase rebuild-index --all`.
 - The default chunking profile targets 1,200 characters with 150 characters of overlap,
   balancing passage coherence with precise local retrieval.
 

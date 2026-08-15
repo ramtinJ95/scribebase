@@ -114,6 +114,7 @@ thin OpenAI-compatible sentence-transformers wrapper (the app only speaks
      --model ./models/Nemotron-3-Embed-1B-BF16.gguf \
      --embedding \
      --pooling mean \
+     --override-kv tokenizer.ggml.add_bos_token=bool:false \
      --ctx-size 8192 \
      -ngl 99 \
      --alias Nemotron-3-Embed-1B-BF16 \
@@ -127,7 +128,17 @@ thin OpenAI-compatible sentence-transformers wrapper (the app only speaks
    texts and prefixed queries through both the llama-server endpoint and
    sentence-transformers; require cosine ≥ 0.99 per pair, 2048 dims, and a
    retrieval sanity check (each `query: ...` ranks its own `passage: ...`
-   first). If BF16 fails parity, try Q8_0 before abandoning llama.cpp.
+   first). `sentence-transformers` is a parity-only dependency, not an
+   application runtime dependency. Run the checker in an isolated uv environment:
+
+   ```bash
+   uv run --with sentence-transformers python scripts/verify_embedding_parity.py \
+     --endpoint http://127.0.0.1:8090/v1 \
+     --model-name Nemotron-3-Embed-1B-BF16 \
+     --reference-model ~/staging/nemotron/hf
+   ```
+
+   If BF16 fails parity, try Q8_0 before abandoning llama.cpp.
 5. Capture a baseline: run ~5 known-good searches against the current Qwen index
    and save results for post-cutover comparison.
 
@@ -161,10 +172,16 @@ thin OpenAI-compatible sentence-transformers wrapper (the app only speaks
 12. Update the live `config.yaml` on the mini: `embedding.model`,
     `query_instruction`, new `document_instruction`. The deployed file has the
     old Qwen instruct string explicitly set, so new defaults alone do not fix it.
-13. `scribebase doctor`, then `scribebase rebuild-index --all`. The model-name
-    and dimension guards (2560 → 2048) force the rebuild; the alias-based
+13. `scribebase doctor`, then `scribebase rebuild-index --all`. The model-name,
+    dimension, and embedding-profile guards force the rebuild; the alias-based
     blue/green rebuild keeps search up, and a failed build leaves the live
     index untouched.
+
+    The profile fingerprint was added after the first completed Nemotron
+    reindex. Deploying that guard therefore requires one more full rebuild so
+    every manifest and Weaviate chunk records the verified model, dimension,
+    query/document instructions, and normalization profile. Missing profile
+    metadata fails closed; it is never inferred from legacy data.
 14. Re-run the Phase 0 baseline queries and compare quality.
 
 ## Rollback
