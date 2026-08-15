@@ -49,9 +49,12 @@ class LlamaCppEmbeddingClient:
         return self.embed_texts([f"{self.config.query_instruction}{query}"])[0]
 
     def embed_batches(self, texts: list[str]) -> Iterable[list[list[float]]]:
+        # Asymmetric models (e.g. Nemotron-3-Embed) need a document-side prefix.
+        # Applied only here, transiently: stored chunk text stays unprefixed.
+        prefix = self.config.document_instruction
         batch_size = self.config.batch_size
         for start in range(0, len(texts), batch_size):
-            yield self.embed_texts(texts[start : start + batch_size])
+            yield self.embed_texts([f"{prefix}{text}" for text in texts[start : start + batch_size]])
 
     def detect_dimension(self) -> int:
         return len(self.embed_texts(["dimension test"])[0])

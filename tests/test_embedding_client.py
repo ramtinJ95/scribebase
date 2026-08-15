@@ -47,6 +47,51 @@ def test_query_embedding_uses_instruction(monkeypatch) -> None:
     assert captured["input"] == ["Q: working memory"]
 
 
+def test_batch_embedding_uses_document_instruction(monkeypatch) -> None:
+    captured_inputs = []
+
+    def fake_post(url, json, timeout):
+        captured_inputs.append(json["input"])
+        return FakeResponse()
+
+    monkeypatch.setattr("scribebase.embeddings.llamacpp_client.httpx.post", fake_post)
+    client = LlamaCppEmbeddingClient(
+        EmbeddingConfig(normalize=False, document_instruction="passage: ", batch_size=2)
+    )
+    list(client.embed_batches(["one", "two", "three"]))
+    assert captured_inputs == [["passage: one", "passage: two"], ["passage: three"]]
+
+
+def test_query_embedding_does_not_get_document_instruction(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(url, json, timeout):
+        captured.update(json)
+        return FakeResponse()
+
+    monkeypatch.setattr("scribebase.embeddings.llamacpp_client.httpx.post", fake_post)
+    client = LlamaCppEmbeddingClient(
+        EmbeddingConfig(normalize=False, query_instruction="query: ", document_instruction="passage: ")
+    )
+    client.embed_query("working memory")
+    assert captured["input"] == ["query: working memory"]
+
+
+def test_dimension_probe_is_unprefixed(monkeypatch) -> None:
+    captured = {}
+
+    def fake_post(url, json, timeout):
+        captured.update(json)
+        return FakeResponse()
+
+    monkeypatch.setattr("scribebase.embeddings.llamacpp_client.httpx.post", fake_post)
+    client = LlamaCppEmbeddingClient(
+        EmbeddingConfig(normalize=False, document_instruction="passage: ")
+    )
+    client.detect_dimension()
+    assert captured["input"] == ["dimension test"]
+
+
 def test_transport_failure_is_typed_as_dependency_unavailable(monkeypatch) -> None:  # noqa: ANN001
     def fail_post(*_args, **_kwargs):  # noqa: ANN002, ANN003
         raise httpx.ConnectError("connection refused")
