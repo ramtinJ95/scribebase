@@ -95,19 +95,26 @@ an operator explicitly stopped it.
 ## 4. Start embeddings
 
 Default ScribeBase config expects llama.cpp embeddings at
-`http://localhost:8080/v1` with model name `Qwen3-Embedding-4B-Q4_K_M.gguf`.
+`http://localhost:8080/v1` with model name `Nemotron-3-Embed-1B-BF16`.
 
 Example manual start:
 
 ```bash
 llama-server \
-  --model "$REPO/models/Qwen3-Embedding-4B-Q4_K_M.gguf" \
+  --model "$REPO/models/Nemotron-3-Embed-1B-BF16.gguf" \
   --embedding \
-  --pooling last \
+  --pooling mean \
+  --override-kv tokenizer.ggml.add_bos_token=bool:false \
+  --alias Nemotron-3-Embed-1B-BF16 \
   --ctx-size 32768 \
   -ngl 99 \
   --port 8080
 ```
+
+`--pooling mean` and the `add_bos_token` override are required for
+Nemotron-3-Embed; without them embeddings are silently wrong. See
+[nemotron-embedding-migration.md](nemotron-embedding-migration.md) for how the
+GGUF is produced and verified.
 
 Check:
 

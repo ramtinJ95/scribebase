@@ -50,9 +50,11 @@ Start the default embedding model with llama.cpp:
 
 ```bash
 llama-server \
-  --model ./models/Qwen3-Embedding-4B-Q4_K_M.gguf \
+  --model ./models/Nemotron-3-Embed-1B-BF16.gguf \
   --embedding \
-  --pooling last \
+  --pooling mean \
+  --override-kv tokenizer.ggml.add_bos_token=bool:false \
+  --alias Nemotron-3-Embed-1B-BF16 \
   --ctx-size 32768 \
   -ngl 99 \
   --port 8080
@@ -293,21 +295,33 @@ page-marker-only content.
 
 ## Embeddings
 
-The default embedding configuration expects `Qwen3-Embedding-4B-Q4_K_M.gguf` served by llama.cpp on port `8080`.
+The default embedding configuration expects `Nemotron-3-Embed-1B-BF16` served by llama.cpp on port `8080`.
 
 ```bash
 llama-server \
-  --model ./models/Qwen3-Embedding-4B-Q4_K_M.gguf \
+  --model ./models/Nemotron-3-Embed-1B-BF16.gguf \
   --embedding \
-  --pooling last \
+  --pooling mean \
+  --override-kv tokenizer.ggml.add_bos_token=bool:false \
+  --alias Nemotron-3-Embed-1B-BF16 \
   -ngl 99 \
   --port 8080
 ```
 
 Notes:
 
-- `--pooling last` is required for Qwen embedding models.
-- The model name in `.scribebase/config.yaml` must match the server model name.
+- `--pooling mean` and `--override-kv tokenizer.ggml.add_bos_token=bool:false`
+  are required for Nemotron-3-Embed; without them the server returns
+  plausible-looking but degraded vectors. See
+  [docs/nemotron-embedding-migration.md](docs/nemotron-embedding-migration.md)
+  for how the GGUF is produced and verified against the reference
+  implementation.
+- Nemotron-3-Embed is asymmetric: ScribeBase prefixes queries with
+  `query_instruction` (`"query: "`) and document chunks with
+  `document_instruction` (`"passage: "`) at embed time only. Stored chunk text
+  stays unprefixed.
+- The model name in `.scribebase/config.yaml` must match the server model name
+  (set via `--alias`).
 - ScribeBase stores embedding model metadata and rejects accidental mixed-model retrieval by default.
 - The default chunking profile targets 1,200 characters with 150 characters of overlap,
   balancing passage coherence with precise local retrieval.
@@ -350,7 +364,9 @@ weaviate:
 embedding:
   provider: "llamacpp"
   base_url: "http://localhost:8080/v1"
-  model: "Qwen3-Embedding-4B-Q4_K_M.gguf"
+  model: "Nemotron-3-Embed-1B-BF16"
+  query_instruction: "query: "
+  document_instruction: "passage: "
   batch_size: 8
 
 chunking:
