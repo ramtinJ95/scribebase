@@ -84,6 +84,7 @@ def test_chunk_properties_include_generic_metadata() -> None:
         file_path="document.md",
         extraction_method="markdown",
         language="en",
+        embedding_profile_fingerprint="v1:test-profile",
     )
 
     props = weaviate_store._chunk_properties(chunk)
@@ -98,6 +99,7 @@ def test_chunk_properties_include_generic_metadata() -> None:
     assert props["external_id"] == "article-1"
     assert props["collection"] == "infra-reading"
     assert props["summary"] == "Article summary."
+    assert props["embedding_profile_fingerprint"] == "v1:test-profile"
 
 
 def test_props_to_chunk_converts_weaviate_datetimes() -> None:

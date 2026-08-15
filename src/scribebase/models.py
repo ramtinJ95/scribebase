@@ -45,6 +45,7 @@ class ExtractionSummary(BaseModel):
 class EmbeddingSummary(BaseModel):
     embedding_model: str | None = None
     embedding_dimension: int | None = None
+    embedding_profile_fingerprint: str | None = None
     embedding_base_url: str | None = None
     indexed_in_weaviate: bool = False
     weaviate_collection: str | None = None
@@ -156,6 +157,7 @@ class Chunk(GenericMetadata):
     language: str | None = None
     embedding_model: str | None = None
     embedding_dimension: int | None = None
+    embedding_profile_fingerprint: str | None = None
     chunker_version: str = "v1"
     created_at: datetime | None = None
 

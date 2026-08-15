@@ -62,10 +62,15 @@ class LlamaCppEmbeddingClient:
     def check_health(self) -> tuple[bool, str]:
         try:
             response = httpx.get(f"{self.base_url}/models", timeout=5)
-            if response.status_code < 500:
+            if response.is_success:
                 model_ids = _model_ids(response.json())
-                suffix = f"; server models={', '.join(model_ids[:3])}" if model_ids else ""
-                return True, f"/v1/models reachable; configured model={self.config.model}{suffix}"
+                if self.config.model in model_ids:
+                    return True, f"/v1/models advertises configured model={self.config.model}"
+                advertised = ", ".join(model_ids[:3]) if model_ids else "none"
+                return False, (
+                    f"configured embedding model {self.config.model!r} is not advertised; "
+                    f"server models={advertised}"
+                )
         except httpx.UnsupportedProtocol:
             raise
         except httpx.TransportError:

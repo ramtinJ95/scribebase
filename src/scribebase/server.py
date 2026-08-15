@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from scribebase.config import AppConfig, load_config, read_api_token
 from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
@@ -57,11 +57,12 @@ class HealthResponse(BaseModel):
 
 
 class SearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     query: str = Field(min_length=1)
     filters: SearchFilters = Field(default_factory=SearchFilters)
     top_k: int | None = Field(default=None, ge=1, le=100)
     alpha: float | None = Field(default=None, ge=0.0, le=1.0)
-    allow_model_mismatch: bool = False
 
 
 class SearchResponse(BaseModel):
@@ -153,7 +154,6 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
                 config,
                 request.top_k,
                 request.alpha,
-                request.allow_model_mismatch,
             )
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
@@ -168,7 +168,6 @@ def create_app(config: AppConfig | None = None, api_token: str | None = None) ->
                 config,
                 request.top_k,
                 request.alpha,
-                request.allow_model_mismatch,
             )
         except Exception as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc

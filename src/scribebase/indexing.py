@@ -17,6 +17,7 @@ from scribebase.durable_fs import (
     durable_unlink,
 )
 from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
+from scribebase.embeddings.profile import embedding_profile_fingerprint
 from scribebase.errors import DependencyUnavailableError, as_dependency_unavailable
 from scribebase.extraction import read_page_metadata
 from scribebase.models import Chunk, SourceManifest
@@ -43,7 +44,7 @@ def index_source(
     config: AppConfig,
     logger,
     no_create_collection: bool = False,
-    allow_existing_model_mismatch: bool = False,
+    allow_existing_profile_mismatch: bool = False,
     operation_id: str | None = None,
 ) -> SourceManifest:
     with _index_lock(config.data_dir):
@@ -53,7 +54,7 @@ def index_source(
             config,
             logger,
             no_create_collection=no_create_collection,
-            allow_existing_model_mismatch=allow_existing_model_mismatch,
+            allow_existing_profile_mismatch=allow_existing_profile_mismatch,
             operation_id=operation_id,
         )
 
@@ -63,7 +64,7 @@ def _index_source(
     config: AppConfig,
     logger,
     no_create_collection: bool = False,
-    allow_existing_model_mismatch: bool = False,
+    allow_existing_profile_mismatch: bool = False,
     collection_name: str | None = None,
     write_manifest_summary: bool = True,
     chunks_output_path: Path | None = None,
@@ -129,7 +130,7 @@ def _index_source(
             if dimension is None:
                 dimension = batch_dimension
                 _validate_embedding_consistency(
-                    config, source_id, dimension, allow_existing_model_mismatch
+                    config, source_id, dimension, allow_existing_profile_mismatch
                 )
             if batch_dimension != dimension or any(
                 len(vector) != dimension for vector in batch_vectors
@@ -138,6 +139,9 @@ def _index_source(
             for chunk in batch_chunks:
                 chunk.embedding_model = config.embedding.model
                 chunk.embedding_dimension = dimension
+                chunk.embedding_profile_fingerprint = embedding_profile_fingerprint(
+                    config.embedding, dimension
+                )
             if collection_name is None:
                 mutation_started = True
             store.upsert_chunks(batch_chunks, batch_vectors, collection_name=collection_name)
@@ -263,7 +267,7 @@ def _rebuild_index(
                         config,
                         logger,
                         no_create_collection=True,
-                        allow_existing_model_mismatch=True,
+                        allow_existing_profile_mismatch=True,
                         collection_name=staging,
                         write_manifest_summary=False,
                         chunks_output_path=staged_chunks,
@@ -329,7 +333,7 @@ def _validate_embedding_consistency(
     config: AppConfig,
     source_id: str,
     dimension: int | None,
-    allow_existing_model_mismatch: bool,
+    allow_existing_profile_mismatch: bool,
 ) -> None:
     from scribebase.source_registry import list_manifests
 
@@ -343,7 +347,11 @@ def _validate_embedding_consistency(
             continue
         if summary.weaviate_collection != config.weaviate.collection:
             continue
-        if summary.embedding_model != config.embedding.model and not allow_existing_model_mismatch:
+        # A full rebuild writes into an isolated staging collection, so the live
+        # collection's profile cannot mix with the vectors being produced here.
+        if allow_existing_profile_mismatch:
+            continue
+        if summary.embedding_model != config.embedding.model:
             raise RuntimeError(
                 "Embedding model mismatch for existing index: "
                 f"configured model is {config.embedding.model!r}, but {manifest.source_id} stores "
@@ -357,6 +365,19 @@ def _validate_embedding_consistency(
                 "Embedding dimension mismatch for existing index: "
                 f"configured model produced {dimension}, but {manifest.source_id} stores "
                 f"{summary.embedding_dimension}. Rebuild the index."
+            )
+        expected_profile = embedding_profile_fingerprint(config.embedding, dimension)
+        if summary.embedding_profile_fingerprint is None:
+            raise RuntimeError(
+                "Embedding profile metadata is missing for existing index source "
+                f"{manifest.source_id!r}. Run `scribebase rebuild-index --all` to prevent "
+                "mixed vectors."
+            )
+        if summary.embedding_profile_fingerprint != expected_profile:
+            raise RuntimeError(
+                "Embedding profile mismatch for existing index: configured instructions or "
+                f"normalization differ from {manifest.source_id!r}. Run `scribebase "
+                "rebuild-index --all`."
             )
 
 
@@ -656,6 +677,11 @@ def _set_embedding_summary(
 ) -> None:
     manifest.embedding_summary.embedding_model = config.embedding.model
     manifest.embedding_summary.embedding_dimension = dimension
+    manifest.embedding_summary.embedding_profile_fingerprint = (
+        embedding_profile_fingerprint(config.embedding, dimension)
+        if dimension is not None
+        else None
+    )
     manifest.embedding_summary.embedding_base_url = config.embedding.base_url
     manifest.embedding_summary.indexed_in_weaviate = True
     manifest.embedding_summary.weaviate_collection = config.weaviate.collection
