@@ -57,7 +57,7 @@ llama-server \
   --alias Nemotron-3-Embed-1B-BF16 \
   --ubatch-size 4096 \
   --batch-size 4096 \
-  --ctx-size 32768 \
+  --ctx-size 8192 \
   -ngl 99 \
   --port 8080
 ```
