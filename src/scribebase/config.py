@@ -33,6 +33,7 @@ class EmbeddingConfig(BaseModel):
     query_instruction: str = (
         "Instruct: Given a question, retrieve relevant source passages that answer it\nQuery: "
     )
+    document_instruction: str = ""
     normalize: bool = True
     dimension: int | None = None
 
