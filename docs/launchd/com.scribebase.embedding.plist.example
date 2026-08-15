@@ -12,10 +12,14 @@
   <array>
     <string>/absolute/path/to/llama-server</string>
     <string>--model</string>
-    <string>/Users/yourname/scribebase/models/Qwen3-Embedding-4B-Q4_K_M.gguf</string>
+    <string>/Users/yourname/scribebase/models/Nemotron-3-Embed-1B-BF16.gguf</string>
     <string>--embedding</string>
     <string>--pooling</string>
-    <string>last</string>
+    <string>mean</string>
+    <string>--override-kv</string>
+    <string>tokenizer.ggml.add_bos_token=bool:false</string>
+    <string>--alias</string>
+    <string>Nemotron-3-Embed-1B-BF16</string>
     <string>--ctx-size</string>
     <string>32768</string>
     <string>-ngl</string>
