@@ -4,6 +4,7 @@ from scribebase.config import AppConfig
 from scribebase.embeddings.llamacpp_client import LlamaCppEmbeddingClient
 from scribebase.embeddings.profile import embedding_profile_fingerprint
 from scribebase.models import SearchFilters, SearchResult
+from scribebase.retrieval.assessment import assess_passages
 from scribebase.source_registry import list_manifests
 from scribebase.vectorstores.weaviate_store import WeaviateStore
 
@@ -15,6 +16,14 @@ def search_chunks(
     top_k: int | None = None,
     alpha: float | None = None,
 ) -> list[SearchResult]:
+    requested = top_k if top_k is not None else config.retrieval.top_k
+    if requested < 1:
+        raise ValueError("top_k must be positive")
+    pool = requested
+    if config.typesafe.reranking_enabled:
+        if requested > config.typesafe.candidate_pool_size:
+            raise ValueError("top_k exceeds the configured TypeSafe candidate_pool_size")
+        pool = config.typesafe.candidate_pool_size
     embedder = LlamaCppEmbeddingClient(config.embedding)
     vector = embedder.embed_query(query)
     expected_profile = embedding_profile_fingerprint(config.embedding, len(vector))
@@ -25,7 +34,7 @@ def search_chunks(
             query=query,
             vector=vector,
             filters=filters,
-            top_k=top_k or config.retrieval.top_k,
+            top_k=pool,
             alpha=alpha if alpha is not None else config.retrieval.alpha,
         )
     finally:
@@ -40,7 +49,7 @@ def search_chunks(
             "Embedding profile mismatch in search results for chunks "
             f"{mismatches[:3]}. Run `scribebase rebuild-index --all`."
         )
-    return results
+    return assess_passages(query, results, config.typesafe)[:requested]
 
 
 def _validate_manifest_profiles(
@@ -79,6 +88,7 @@ def format_search_results(results: list[SearchResult]) -> str:
             [
                 f"{i}. {c.title}, chapter {c.chapter or '-'}, section {c.section or '-'}, pages {pages}",
                 f"   score: {result.score if result.score is not None else '-'}",
+                *([f"   relevance: {result.assessment.relevance_score}"] if result.assessment else []),
                 f"   chunk_id: {c.chunk_id}",
                 f"   snippet: {snippet}",
             ]
