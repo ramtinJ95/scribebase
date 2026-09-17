@@ -9,6 +9,7 @@ from typing import Iterator
 from uuid import uuid4
 
 from scribebase.chunking.chunker import chunk_markdown
+from scribebase.chunking.structure import recover_structure
 from scribebase.config import AppConfig
 from scribebase.durable_fs import (
     atomic_write,
@@ -36,6 +37,12 @@ def chunk_source(manifest: SourceManifest, config: AppConfig) -> list[Chunk]:
     if not markdown_path.exists():
         raise FileNotFoundError(f"Missing extracted Markdown: {markdown_path}")
     pages = read_page_metadata(root)
+    if config.typesafe.structure_enabled:
+        structure = recover_structure(markdown_path, config.typesafe)
+        chunking = config.chunking.model_copy(update={
+            "chunker_version": f"{config.chunking.chunker_version}+typesafe-structure-v1",
+        })
+        return chunk_markdown(markdown_path, manifest, pages, chunking, structure=structure)
     return chunk_markdown(markdown_path, manifest, pages, config.chunking)
 
 

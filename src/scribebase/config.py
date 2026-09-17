@@ -99,6 +99,15 @@ class ChunkingConfig(BaseModel):
     chunker_version: str = "v2"
 
 
+class TypeSafeConfig(BaseModel):
+    structure_enabled: bool = False
+    model: str = "jev-latest"
+    api_key_env: str = "TYPESAFE_API_KEY"
+    timeout_seconds: float = Field(default=60, gt=0)
+    batch_size: int = Field(default=16, ge=1, le=32)
+    structure_confidence: float = Field(default=0.85, ge=0, le=1)
+
+
 class RetrievalConfig(BaseModel):
     alpha: float = 0.65
     top_k: int = 12
@@ -142,6 +151,7 @@ class AppConfig(BaseModel):
     ocr: OCRConfig = Field(default_factory=OCRConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    typesafe: TypeSafeConfig = Field(default_factory=TypeSafeConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
 
     @model_validator(mode="before")
