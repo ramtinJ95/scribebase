@@ -89,3 +89,21 @@ def test_code_fences_not_candidates(tmp_path, monkeypatch):
         return {"model": "test", "answers": {"3": choice()}}
     monkeypatch.setattr(structure, "evaluate", fake)
     assert structure.recover_structure(path, TypeSafeConfig()) == {3: "chapter"}
+
+
+@pytest.mark.parametrize("score, probabilities", [
+    (2.61, {"0": 0.0, "1": 0.01, "2": 0.35, "3": 0.64}),
+    (1.5, {"0": 0.26, "1": 0.25, "2": 0.25, "3": 0.26}),
+])
+def test_independently_rounded_score_distribution(score, probabilities):
+    criteria = ["none", "background", "partial", "direct"]
+    questions = {"relevance": {"type": "score", "criteria": criteria}}
+    answers = {"relevance": {
+        "type": "score", "score": score, "confidence": 0.61,
+        "legend": dict(enumerate(criteria)), "probabilities": probabilities,
+    }}
+    answers["relevance"]["legend"] = {str(i): value for i, value in enumerate(criteria)}
+    assert validate_answers(answers, questions) == answers
+    answers["relevance"]["score"] = 0.5
+    with pytest.raises(TypeSafeError, match="score does not match"):
+        validate_answers(answers, questions)

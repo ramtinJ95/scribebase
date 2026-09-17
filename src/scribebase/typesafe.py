@@ -41,7 +41,11 @@ def validate_answers(answers: Any, questions: dict) -> dict:
             if set(probabilities) != options:
                 raise ValueError("probability options mismatch")
             values = [_number(value, 0, 1) for value in probabilities.values()]
-            if not math.isclose(sum(values), 1, abs_tol=0.01):
+            # The service independently rounds probabilities and scores to two
+            # decimals. Bound the accumulated rounding error rather than requiring
+            # the rounded distribution to reconstruct the unrounded score exactly.
+            probability_tolerance = 0.005 * len(values) + 1e-9
+            if not math.isclose(sum(values), 1, abs_tol=probability_tolerance):
                 raise ValueError("probabilities do not sum to one")
             _number(answer["confidence"], 0, 1)
             if kind == "choice":
@@ -54,7 +58,8 @@ def validate_answers(answers: Any, questions: dict) -> dict:
                 if answer["legend"] != {str(i): value for i, value in enumerate(criteria)}:
                     raise ValueError("score legend mismatch")
                 expected = sum(int(i) * p for i, p in probabilities.items())
-                if not math.isclose(score, expected, abs_tol=0.02):
+                score_tolerance = 0.005 * (1 + sum(range(len(criteria)))) + 1e-9
+                if not math.isclose(score, expected, abs_tol=score_tolerance):
                     raise ValueError("score does not match probabilities")
             else:
                 raise ValueError("unsupported question type")
