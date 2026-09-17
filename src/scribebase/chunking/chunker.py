@@ -22,10 +22,11 @@ def chunk_markdown(
     manifest: SourceManifest,
     pages: list[PageMetadata],
     config: ChunkingConfig | None = None,
+    structure: dict[int, str] | None = None,
 ) -> list[Chunk]:
     config = config or ChunkingConfig()
     text = markdown_path.read_text()
-    units = _units(text)
+    units = _units(text, structure)
     chunks: list[Chunk] = []
     current = ""
     current_pages: list[int] = []
@@ -133,7 +134,7 @@ def chunk_markdown(
     return chunks
 
 
-def _units(text: str) -> list[tuple[str, int | None, str | None, str | None]]:
+def _units(text: str, structure: dict[int, str] | None = None) -> list[tuple[str, int | None, str | None, str | None]]:
     parts = re.split(r"(\n\s*\n)", text)
     units: list[tuple[str, int | None, str | None, str | None]] = []
     page: int | None = None
@@ -154,11 +155,16 @@ def _units(text: str) -> list[tuple[str, int | None, str | None, str | None]]:
             page = int(marker.group(1))
         heading = HEADING_RE.search(part)
         heading_text = heading.group(2).strip() if heading else None
+        role = (structure or {}).get(content_index)
+        if role and heading_text is None:
+            heading_text = part.strip()
         if heading_text:
             clean_heading = _clean_heading_text(heading_text)
-            level = len(heading.group(1))
+            level = len(heading.group(1)) if heading else 0
             inferred = _chapter_from_heading(clean_heading, level)
-            if inferred is None and _looks_like_untitled_chapter(content_parts, content_index, level):
+            if inferred is None and role == "chapter":
+                inferred = clean_heading
+            if structure is None and inferred is None and _looks_like_untitled_chapter(content_parts, content_index, level):
                 inferred_chapter_count += 1
                 inferred = f"Chapter {inferred_chapter_count}: {clean_heading}"
             if inferred:
