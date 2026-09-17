@@ -198,6 +198,11 @@ class PassageAssessment(BaseModel):
     version: str = "v1"
     relevance_score: float | None = None
     relevance_confidence: float | None = None
+    evidence_role: Literal["evidence", "contradiction", "background", "irrelevant"] | None = None
+    evidence_confidence: float | None = None
+    instruction_probability: float | None = None
+    context_disposition: Literal["include", "exclude"] = "include"
+    exclusion_reason: str | None = None
     text_truncated: bool = False
     raw_answers: dict = Field(default_factory=dict)
 
