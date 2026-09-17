@@ -102,6 +102,9 @@ class ChunkingConfig(BaseModel):
 class TypeSafeConfig(BaseModel):
     structure_enabled: bool = False
     reranking_enabled: bool = False
+    classification_enabled: bool = False
+    classification_confidence: float = Field(default=0.85, ge=0, le=1)
+    instruction_exclusion_probability: float = Field(default=0.85, ge=0, le=1)
     candidate_pool_size: int = Field(default=36, ge=1, le=100)
     passage_max_chars: int = Field(default=6000, ge=500, le=20000)
     model: str = "jev-latest"

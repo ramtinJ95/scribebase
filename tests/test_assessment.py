@@ -64,3 +64,53 @@ def test_truncation_visible_and_source_unchanged(monkeypatch):
     ranked = assessment.assess_passages("q", [original], TypeSafeConfig(reranking_enabled=True, passage_max_chars=500))
     assert ranked[0].assessment.text_truncated
     assert ranked[0].chunk.text == original.chunk.text
+
+
+@pytest.mark.parametrize("rerank", [False, True])
+def test_classification_shares_call_and_preserves_contradictions(monkeypatch, rerank):
+    calls = []
+    def fake(state, questions, config):
+        calls.append(questions)
+        answers = {}
+        roles = ["contradiction", "irrelevant", "evidence"]
+        for i, role in enumerate(roles):
+            answers[f"evidence_{i}"] = {"choice": role, "confidence": 0.95}
+            answers[f"instructions_{i}"] = {"noul": 0.99 if i == 2 else 0.01}
+            if rerank:
+                answers[f"relevance_{i}"] = {"score": 1, "confidence": 0.8}
+        return {"model": "test", "answers": answers}
+    monkeypatch.setattr(assessment, "evaluate", fake)
+    ranked = assessment.assess_passages("q", [result(i) for i in range(3)], TypeSafeConfig(
+        reranking_enabled=rerank, classification_enabled=True))
+    assert len(calls) == 1
+    assert len(calls[0]) == (9 if rerank else 6)
+    assert ranked[0].assessment.evidence_role == "contradiction"
+    assert ranked[0].assessment.context_disposition == "include"
+    assert ranked[1].assessment.exclusion_reason == "irrelevant"
+    assert ranked[2].assessment.exclusion_reason == "suspected_instruction_attempt"
+    from scribebase.retrieval.context_pack import build_context_pack
+    pack = build_context_pack("q", ranked)
+    assert "Evidence role: contradiction" in pack
+    assert "Passage 0" in pack
+    assert "Passage 1" not in pack
+    assert "Passage 2" not in pack
+    assert "1: irrelevant" in pack
+
+
+def test_uncertain_irrelevance_is_not_silently_dropped(monkeypatch):
+    monkeypatch.setattr(assessment, "evaluate", lambda *args: {"model": "test", "answers": {
+        "evidence_0": {"choice": "irrelevant", "confidence": 0.2},
+        "instructions_0": {"noul": 0.4},
+    }})
+    ranked = assessment.assess_passages("q", [result(0)], TypeSafeConfig(classification_enabled=True))
+    assert ranked[0].assessment.context_disposition == "include"
+
+
+def test_all_excluded_context_is_explicit():
+    from scribebase.models import PassageAssessment
+    from scribebase.retrieval.context_pack import build_context_pack
+    passage = result(0)
+    passage.assessment = PassageAssessment(model="test", context_disposition="exclude", exclusion_reason="irrelevant")
+    pack = build_context_pack("q", [passage])
+    assert "No usable context remains" in pack
+    assert passage.chunk.text not in pack

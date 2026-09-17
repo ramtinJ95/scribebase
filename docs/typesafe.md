@@ -11,6 +11,9 @@ never in committed YAML. Configure `typesafe` in the normal ScribeBase config:
 typesafe:
   structure_enabled: true
   reranking_enabled: true
+  classification_enabled: true
+  classification_confidence: 0.85
+  instruction_exclusion_probability: 0.85
   candidate_pool_size: 36
   passage_max_chars: 6000
   model: jev-latest
@@ -58,3 +61,39 @@ truncation flag. Only the first `passage_max_chars` characters of a passage are
 assessed; returned source text and citations remain intact. Query and title are
 also sent to TypeSafe. Empty result sets and disabled features make no calls.
 Service failure fails the search; it does not return an unannounced hybrid fallback.
+
+## Passage screening for context packs
+
+Classification shares each assessment request with reranking when both are enabled.
+It also works independently, preserving hybrid ordering. A Choice labels evidence,
+contradiction of the query's premise, background, or irrelevant material. A separate
+Noul estimates whether the passage attempts to instruct the consuming AI.
+
+Context packs withhold text for likely instruction attempts (probability at least
+`instruction_exclusion_probability`) or confidently irrelevant material (confidence
+at least `classification_confidence`). Excluded chunk IDs and reasons remain visible.
+Uncertain and background passages stay in context, with their role and confidence.
+Contradictions are explicitly labeled and retained unless the independent instruction
+screen excludes them. If everything is excluded, the pack says no usable context remains.
+Search results still expose all selected passages and raw assessments for auditing.
+Filtering occurs after top-k selection, so a pack can contain fewer than top-k passages;
+excluded passages are not silently replaced by lower-ranked candidates.
+
+This is semantic screening, **not a prompt-injection security boundary**. A passage
+can be misclassified, and only its assessed prefix is screened when truncation occurs.
+Thresholds require evaluation on your material; unit tests establish workflow behavior,
+not model accuracy. No answering/generation model is introduced.
+
+## Mac mini rollout
+
+After pulling the merged changes, run `uv sync --extra server --extra dev`. Existing
+dependencies suffice (HTTP calls use httpx). Set the key in the environment loaded by
+both launchd services and enable the three flags in the deployment config. Restart
+only ScribeBase server and worker; embeddings, OCR, and Weaviate do not need restarts
+or schema migration. Do not rebuild the library just to enable these features.
+
+Smoke-test an isolated Markdown fixture through chunking and check its structure
+sidecar; then exercise search and context with a known query. Check that original
+hybrid scores/citations coexist with assessments, contradictions remain labeled,
+and excluded passage text is absent from context packs. Disabling the three flags
+restores the original path; it does not remove cached annotations or alter source text.
