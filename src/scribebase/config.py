@@ -101,6 +101,9 @@ class ChunkingConfig(BaseModel):
 
 class TypeSafeConfig(BaseModel):
     structure_enabled: bool = False
+    reranking_enabled: bool = False
+    candidate_pool_size: int = Field(default=36, ge=1, le=100)
+    passage_max_chars: int = Field(default=6000, ge=500, le=20000)
     model: str = "jev-latest"
     api_key_env: str = "TYPESAFE_API_KEY"
     timeout_seconds: float = Field(default=60, gt=0)

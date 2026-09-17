@@ -193,7 +193,17 @@ class SearchFilters(BaseModel):
         return normalize_tags(value)
 
 
+class PassageAssessment(BaseModel):
+    model: str
+    version: str = "v1"
+    relevance_score: float | None = None
+    relevance_confidence: float | None = None
+    text_truncated: bool = False
+    raw_answers: dict = Field(default_factory=dict)
+
+
 class SearchResult(BaseModel):
     chunk: Chunk
     score: float | None = None
     explain_score: str | None = None
+    assessment: PassageAssessment | None = None

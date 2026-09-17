@@ -10,6 +10,9 @@ never in committed YAML. Configure `typesafe` in the normal ScribeBase config:
 ```yaml
 typesafe:
   structure_enabled: true
+  reranking_enabled: true
+  candidate_pool_size: 36
+  passage_max_chars: 6000
   model: jev-latest
   api_key_env: TYPESAFE_API_KEY
   timeout_seconds: 60
@@ -39,3 +42,19 @@ errors fail the operation. Rate-limit/overload responses get two bounded retries
 Structure assessment runs before vector-store mutations, so failure preserves
 the published index. Successful annotation caches may remain after a later
 embedding/indexing failure and are safe to reuse.
+
+## Query-aware reranking
+
+Hybrid retrieval still applies the original filters and embedding-profile checks.
+When enabled it retrieves `candidate_pool_size` candidates, assesses their relevance
+to the query on a four-level Score rubric (0–3), then returns the requested top-k.
+Requests larger than the pool fail explicitly; raise the pool (maximum 100) if
+needed. Equal semantic scores preserve hybrid order. There is no low-confidence
+filter: confidence is reported separately, not confused with relevance.
+
+The original `score` and `explain_score` remain unchanged. Search JSON adds an
+`assessment` with semantic score, confidence, model, raw answers, and a visible
+truncation flag. Only the first `passage_max_chars` characters of a passage are
+assessed; returned source text and citations remain intact. Query and title are
+also sent to TypeSafe. Empty result sets and disabled features make no calls.
+Service failure fails the search; it does not return an unannounced hybrid fallback.
